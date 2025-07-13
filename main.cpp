@@ -19,70 +19,6 @@ std::vector<std::string> split(const std::string& s, char delimiter) {
     return tokens;
 }
 
-void apply_move_updates(ThreadInfo& thread, const chess::Board& board, const chess::Move& move) {
-    const auto us = board.sideToMove();
-    const auto from = move.from();
-    const auto to = move.to();
-    const auto piece_moving = board.at(from);
-
-    thread.accumulatorStack.remove_piece(piece_moving, from);
-
-    if (move.typeOf() == chess::Move::PROMOTION) {
-        const auto captured = board.at(to);
-        thread.accumulatorStack.remove_piece(captured, to);
-        thread.accumulatorStack.add_piece(chess::Piece(move.promotionType(), us), to);
-    } else if (move.typeOf() == chess::Move::ENPASSANT) {
-        const auto captured_sq = chess::Square(to.file(), from.rank());
-        thread.accumulatorStack.remove_piece(chess::Piece(chess::PieceType::PAWN, ~us), captured_sq);
-        thread.accumulatorStack.add_piece(piece_moving, to);
-    } else if (move.typeOf() == chess::Move::CASTLING) {
-        const bool king_side = to.file() > from.file();
-        const auto rook_from = to;
-        const auto rook_to = chess::Square::castling_rook_square(king_side, us);
-        const auto king_to = chess::Square::castling_king_square(king_side, us);
-        const auto rook = board.at(rook_from);
-        
-        thread.accumulatorStack.add_piece(piece_moving, king_to);
-        thread.accumulatorStack.remove_piece(rook, rook_from);
-        thread.accumulatorStack.add_piece(rook, rook_to);
-    } else { // Normal move
-        const auto captured = board.at(to);
-        thread.accumulatorStack.remove_piece(captured, to);
-        thread.accumulatorStack.add_piece(piece_moving, to);
-    }
-}
-
-void revert_move_updates(ThreadInfo& thread, const chess::Board& board, const chess::Move& move, const chess::Piece& captured_piece) {
-    const auto us = board.sideToMove();
-    const auto from = move.from();
-    const auto to = move.to();
-    const auto piece_that_moved = board.at(from);
-
-    thread.accumulatorStack.add_piece(piece_that_moved, from);
-
-    if (move.typeOf() == chess::Move::PROMOTION) {
-        thread.accumulatorStack.remove_piece(chess::Piece(move.promotionType(), us), to);
-        thread.accumulatorStack.add_piece(captured_piece, to);
-    } else if (move.typeOf() == chess::Move::ENPASSANT) {
-        const auto captured_sq = chess::Square(to.file(), from.rank());
-        thread.accumulatorStack.add_piece(captured_piece, captured_sq);
-        thread.accumulatorStack.remove_piece(piece_that_moved, to);
-    } else if (move.typeOf() == chess::Move::CASTLING) {
-        const bool king_side = to.file() > from.file();
-        const auto rook_from = to; // Original rook position
-        const auto rook_to = chess::Square::castling_rook_square(king_side, us);
-        const auto king_to = chess::Square::castling_king_square(king_side, us);
-        const auto rook = board.at(rook_from);
-
-        thread.accumulatorStack.remove_piece(piece_that_moved, king_to);
-        thread.accumulatorStack.add_piece(rook, rook_from);
-        thread.accumulatorStack.remove_piece(rook, rook_to);
-    } else { // Normal move
-        thread.accumulatorStack.remove_piece(piece_that_moved, to);
-        thread.accumulatorStack.add_piece(captured_piece, to);
-    }
-}
-
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, ThreadInfo& thread) {
     if (depth == 0) {
@@ -105,13 +41,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, ThreadInfo& t
             ? chess::Piece(chess::PieceType::PAWN, ~us)
             : board.at(move.to());
 
-        apply_move_updates(thread, board, move);
         board.makeMove(move);
 
         int eval = -alphaBeta(board, depth - 1, -beta, -alpha, thread);
 
         board.unmakeMove(move);
-        revert_move_updates(thread, board, move, captured);
 
         if (eval >= beta) {
             return beta;
@@ -140,13 +74,11 @@ chess::Move search(chess::Board& board, int depth, ThreadInfo& thread) {
             ? chess::Piece(chess::PieceType::PAWN, ~us)
             : board.at(move.to());
 
-        apply_move_updates(thread, board, move);
         board.makeMove(move);
         
         int eval = -alphaBeta(board, depth - 1, -beta, -alpha, thread);
         
         board.unmakeMove(move);
-        revert_move_updates(thread, board, move, captured);
 
         if (eval > alpha) {
             alpha = eval;
@@ -178,6 +110,8 @@ void uci_loop() {
             std::cout << "uciok" << std::endl;
         } else if (tokens[0] == "isready") {
             std::cout << "readyok" << std::endl;
+        } else if (tokens[0] == "eval") {
+            g_nnue.showBuckets(&board, thread.accumulatorStack);
         } else if (tokens[0] == "ucinewgame") {
             board.setFen(chess::constants::STARTPOS);
             thread.accumulatorStack.resetAccumulators(board);
@@ -204,7 +138,6 @@ void uci_loop() {
             if (move_start_index != -1) {
                 for (int i = move_start_index; i < tokens.size(); ++i) {
                     chess::Move move = chess::uci::uciToMove(board, tokens[i]);
-                    apply_move_updates(thread, board, move);
                     board.makeMove(move);
                 }
             }
