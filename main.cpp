@@ -13,6 +13,7 @@
 constexpr int MATE_SCORE = 30000;
 constexpr int DEFAULT_SEARCH_DEPTH = 5;
 constexpr int CONTEMPT = 0;
+constexpr int MAX_PLY = 100;
 
 // ============= NODE COUNTER =============
 struct SearchStats {
@@ -77,8 +78,49 @@ struct ButterflyHistory {
     }
 };
 
-// Global butterfly history table
+// ============= KILLER MOVES =============
+struct KillerMoves {
+    chess::Move killers[MAX_PLY][2];  // [ply][slot] - 2 killer moves per ply
+    
+    KillerMoves() {
+        clear();
+    }
+    
+    void clear() {
+        for (int i = 0; i < MAX_PLY; ++i) {
+            killers[i][0] = chess::Move();
+            killers[i][1] = chess::Move();
+        }
+    }
+    
+    void store(int ply, chess::Move move) {
+        // Don't store if already in slot 0
+        if (move == killers[ply][0]) {
+            return;
+        }
+        
+        // Shift: slot 0 -> slot 1, new move -> slot 0
+        killers[ply][1] = killers[ply][0];
+        killers[ply][0] = move;
+    }
+    
+    bool is_killer(int ply, chess::Move move) const {
+        if (ply >= MAX_PLY) return false;
+        return move == killers[ply][0] || move == killers[ply][1];
+    }
+    
+    int get_killer_score(int ply, chess::Move move) const {
+        if (ply >= MAX_PLY) return 0;
+        
+        if (move == killers[ply][0]) return 2;  // Primary killer
+        if (move == killers[ply][1]) return 1;  // Secondary killer
+        return 0;
+    }
+};
+
+// Global tables
 ButterflyHistory g_butterflyHistory;
+KillerMoves g_killerMoves;
 
 // ============= TRANSPOSITION TABLE GLOBALS =============
 size_t TT_SIZE = 1 << 20;  // Default 1M entries (~24MB)
@@ -471,7 +513,8 @@ struct ScoredMove {
     ScoredMove(chess::Move m, int s) : move(m), score(s) {}
 };
 
-int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, const chess::Move& tt_move) {
+int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, 
+                         const chess::Move& tt_move, int ply) {
     // TT move gets highest priority
     if (move == tt_move && tt_move != chess::Move()) {
         return 1000000;
@@ -495,6 +538,12 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, con
         return 800000 + 100;
     }
     
+    // Killer moves (only for quiet moves)
+    int killer_score = g_killerMoves.get_killer_score(ply, move);
+    if (killer_score > 0) {
+        return 700000 + killer_score * 1000;  // Primary killer > Secondary killer
+    }
+    
     // Quiet moves - use butterfly history
     int score = g_butterflyHistory.get(move.from(), move.to());
     
@@ -507,12 +556,13 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, con
 }
 
 // Score all moves once
-std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board, const chess::Move& tt_move = chess::Move()) {
+std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board, 
+                                   const chess::Move& tt_move = chess::Move(), int ply = 0) {
     std::vector<ScoredMove> scored;
     scored.reserve(moves.size());
     
     for (const auto& move : moves) {
-        scored.emplace_back(move, scoreMoveForOrdering(board, move, tt_move));
+        scored.emplace_back(move, scoreMoveForOrdering(board, move, tt_move, ply));
     }
     
     return scored;
@@ -558,7 +608,7 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
         }
     }
     
-    auto scored_moves = scoreMoves(tactical_moves, board);
+    auto scored_moves = scoreMoves(tactical_moves, board, chess::Move(), ply_from_root);
     
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
@@ -700,7 +750,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return getDrawScore(ply_from_root);
     }
     
-    auto scored_moves = scoreMoves(moves, board, tt_move);
+    auto scored_moves = scoreMoves(moves, board, tt_move, ply_from_root);
     
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -804,7 +854,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
 
         if (eval >= beta) {
+            // *** KILLER MOVE UPDATE - Store beta cutoff quiet moves ***
             if (is_quiet) {
+                g_killerMoves.store(ply_from_root, move);
+                
                 int bonus = 32 * depth * depth;
                 
                 g_butterflyHistory.update(move.from(), move.to(), bonus);
@@ -1035,7 +1088,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v2.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1046,7 +1099,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
 
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v10.2-PickBest" << std::endl;
+            std::cout << "id name MyNNUEEngine v11.0-Killers" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
@@ -1069,6 +1122,7 @@ void uci_loop() {
             thread.accumulatorStack.resetAccumulators(board);
             clearTT();
             g_butterflyHistory.clear();
+            g_killerMoves.clear();  // *** Clear killer moves for new game ***
             
         } else if (tokens[0] == "position") {
             int move_start_index = -1;
