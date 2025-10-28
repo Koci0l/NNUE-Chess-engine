@@ -9,7 +9,7 @@
 #include <vector>
 
 struct ThreadInfo {
-    AccumulatorPair accumulatorStack;
+    AccumulatorStack accumulatorStack;
 };
 
 class NNUE {
@@ -34,6 +34,7 @@ public:
     friend void AccumulatorPair::resetAccumulators(const chess::Board& board);
     friend void AccumulatorPair::add_piece(const chess::Piece& p, const chess::Square& sq);
     friend void AccumulatorPair::remove_piece(const chess::Piece& p, const chess::Square& sq);
+    friend void AccumulatorPair::move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
 };
 
 extern NNUE g_nnue;

@@ -38,8 +38,6 @@ void NNUE::loadNetwork(const std::string& filepath) {
         return;
     }
 
-    // Directly read the weights, assuming the file format is already optimized
-    // for this engine's access pattern ([INPUT_SIZE][HL_SIZE]).
     stream.read(reinterpret_cast<char*>(weightsToHL.data()), weightsToHL.size() * sizeof(i16));
     stream.read(reinterpret_cast<char*>(hiddenLayerBias.data()), hiddenLayerBias.size() * sizeof(i16));
     stream.read(reinterpret_cast<char*>(weightsToOut[0].data()), weightsToOut[0].size() * sizeof(i16));
@@ -60,15 +58,14 @@ int NNUE::forwardPass(const chess::Board* board, const AccumulatorPair& accumula
     i64 eval = vectorizedSCReLU(accumulatorSTM, accumulatorOPP, outputBucket);
 
     eval /= QA;
-
     eval += outputBias[outputBucket];
     
     return static_cast<int>((eval * EVAL_SCALE) / (static_cast<i64>(QA) * QB));
 }
 
 i16 NNUE::evaluate(const chess::Board& board, ThreadInfo& thisThread) {
-    thisThread.accumulatorStack.resetAccumulators(board);
-    const int eval = g_nnue.forwardPass(&board, thisThread.accumulatorStack);
+    // Use current accumulator - do NOT reset it!
+    const int eval = g_nnue.forwardPass(&board, thisThread.accumulatorStack.current());
     return std::clamp(eval, Search::TB_MATED_IN_MAX_PLY, Search::TB_MATE_IN_MAX_PLY);
 }
 
@@ -89,6 +86,26 @@ void AccumulatorPair::remove_piece(const chess::Piece& p, const chess::Square& s
     for(usize i = 0; i < HL_SIZE; ++i) {
         white.values[i] -= g_nnue.weightsToHL[feature_w * HL_SIZE + i];
         black.values[i] -= g_nnue.weightsToHL[feature_b * HL_SIZE + i];
+    }
+}
+
+void AccumulatorPair::move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to) {
+    if (p == chess::Piece::NONE) return;
+    
+    // Remove from old square
+    usize feature_from_w = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), from);
+    usize feature_from_b = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), from);
+    
+    // Add to new square
+    usize feature_to_w = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), to);
+    usize feature_to_b = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), to);
+    
+    for(usize i = 0; i < HL_SIZE; ++i) {
+        white.values[i] -= g_nnue.weightsToHL[feature_from_w * HL_SIZE + i];
+        white.values[i] += g_nnue.weightsToHL[feature_to_w * HL_SIZE + i];
+        
+        black.values[i] -= g_nnue.weightsToHL[feature_from_b * HL_SIZE + i];
+        black.values[i] += g_nnue.weightsToHL[feature_to_b * HL_SIZE + i];
     }
 }
 
