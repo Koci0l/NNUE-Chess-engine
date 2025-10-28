@@ -232,11 +232,11 @@ struct TimeManager {
     }
 };
 
-// ============= ZOBRIST HASHING (FIXED) =============
+// ============= ZOBRIST HASHING =============
 uint64_t zobrist_piece[12][64];
 uint64_t zobrist_side;
-uint64_t zobrist_castling[16];  // 4 bits: WK, WQ, BK, BQ
-uint64_t zobrist_ep_file[8];    // en passant file a-h
+uint64_t zobrist_castling[16];
+uint64_t zobrist_ep_file[8];
 
 void initZobrist() {
     std::mt19937_64 rng(0x1337BEEF);
@@ -261,7 +261,6 @@ void initZobrist() {
 uint64_t getZobristHash(const chess::Board& board) {
     uint64_t hash = 0;
     
-    // Hash pieces
     for (int sq = 0; sq < 64; ++sq) {
         chess::Piece p = board.at(chess::Square(sq));
         if (p != chess::Piece::NONE) {
@@ -270,12 +269,10 @@ uint64_t getZobristHash(const chess::Board& board) {
         }
     }
     
-    // Hash side to move (XOR when black to move)
     if (board.sideToMove() == chess::Color::BLACK) {
         hash ^= zobrist_side;
     }
     
-    // Hash castling rights (4-bit mask)
     int castling_rights = 0;
     if (board.castlingRights().has(chess::Color::WHITE, chess::Board::CastlingRights::Side::KING_SIDE)) 
         castling_rights |= 1;
@@ -287,7 +284,6 @@ uint64_t getZobristHash(const chess::Board& board) {
         castling_rights |= 8;
     hash ^= zobrist_castling[castling_rights];
     
-    // Hash en passant file (only if there's a valid EP square)
     if (board.enpassantSq() != chess::Square::underlying::NO_SQ) {
         int ep_file = static_cast<int>(board.enpassantSq().file());
         hash ^= zobrist_ep_file[ep_file];
@@ -297,9 +293,8 @@ uint64_t getZobristHash(const chess::Board& board) {
 }
 
 // ============= NNUE SCALING =============
-// If your NNUE outputs values that are 2x centipawns, divide by 2
 inline int scaleNNUE(int raw_score) {
-    return raw_score / 2;  // Adjust this divisor based on your network's output scale
+    return raw_score / 2;
 }
 
 // ============= TT FUNCTIONS =============
@@ -307,7 +302,6 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move, TTFlag f
     size_t index = key & TT_MASK;
     TTEntry& entry = tt[index];
     
-    // Adjust mate scores before storing (convert from search score to TT score)
     int stored_score = score;
     if (score >= MATE_SCORE - 100) {
         stored_score = score + ply_from_root;
@@ -315,7 +309,6 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move, TTFlag f
         stored_score = score - ply_from_root;
     }
     
-    // Replace if new entry or deeper search
     if (entry.key != key || entry.depth < depth) {
         entry.key = key;
         entry.depth = depth;
@@ -329,20 +322,16 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score, chess::Mo
     size_t index = key & TT_MASK;
     const TTEntry& entry = tt[index];
     
-    // Initialize tt_move to null move on key mismatch
     if (entry.key != key) {
         tt_move = chess::Move();
         return false;
     }
     
-    // ALWAYS extract tt_move for move ordering, even if depth is insufficient
     tt_move = entry.best_move;
     
-    // Only use score if depth is sufficient
     if (entry.depth >= depth) {
         int retrieved_score = entry.score;
         
-        // Adjust mate scores after retrieving (convert from TT score to search score)
         if (retrieved_score >= MATE_SCORE - 100) {
             retrieved_score -= ply_from_root;
         } else if (retrieved_score <= -MATE_SCORE + 100) {
@@ -363,7 +352,6 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score, chess::Mo
         }
     }
     
-    // No cutoff, but tt_move is still valid for move ordering
     return false;
 }
 
@@ -376,14 +364,12 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
         size_t index = hash & TT_MASK;
         const TTEntry& entry = tt[index];
         
-        // Check if TT entry is valid
         if (entry.key != hash || entry.best_move == chess::Move()) {
             break;
         }
         
         chess::Move move = entry.best_move;
         
-        // Verify move is legal
         chess::Movelist legal_moves;
         chess::movegen::legalmoves(legal_moves, board);
         
@@ -400,7 +386,6 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
         pv.push_back(move);
         board.makeMove(move);
         
-        // Stop if checkmate or stalemate
         chess::Movelist next_moves;
         chess::movegen::legalmoves(next_moves, board);
         if (next_moves.empty()) {
@@ -470,7 +455,7 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, c
     }
 }
 
-// ============= MOVE ORDERING =============
+// ============= MOVE ORDERING WITH INCREMENTAL SELECTION =============
 int pieceValue(chess::PieceType pt) {
     static const int values[] = {100, 320, 330, 500, 900, 20000};
     int idx = static_cast<int>(pt);
@@ -478,9 +463,15 @@ int pieceValue(chess::PieceType pt) {
     return 0;
 }
 
-int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, const chess::Move& tt_move) {
-    int score = 0;
+struct ScoredMove {
+    chess::Move move;
+    int score;
     
+    ScoredMove() : score(0) {}
+    ScoredMove(chess::Move m, int s) : move(m), score(s) {}
+};
+
+int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, const chess::Move& tt_move) {
     // TT move gets highest priority
     if (move == tt_move && tt_move != chess::Move()) {
         return 1000000;
@@ -501,11 +492,11 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, con
     
     // En passant captures
     if (move.typeOf() == chess::Move::ENPASSANT) {
-        return 800000 + 100;  // Pawn value
+        return 800000 + 100;
     }
     
     // Quiet moves - use butterfly history
-    score = g_butterflyHistory.get(move.from(), move.to());
+    int score = g_butterflyHistory.get(move.from(), move.to());
     
     // Small bonus for castling
     if (move.typeOf() == chess::Move::CASTLING) {
@@ -515,10 +506,35 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, con
     return score;
 }
 
-void orderMoves(chess::Movelist& moves, const chess::Board& board, const chess::Move& tt_move = chess::Move()) {
-    std::sort(moves.begin(), moves.end(), [&](const chess::Move& a, const chess::Move& b) {
-        return scoreMoveForOrdering(board, a, tt_move) > scoreMoveForOrdering(board, b, tt_move);
-    });
+// Score all moves once
+std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board, const chess::Move& tt_move = chess::Move()) {
+    std::vector<ScoredMove> scored;
+    scored.reserve(moves.size());
+    
+    for (const auto& move : moves) {
+        scored.emplace_back(move, scoreMoveForOrdering(board, move, tt_move));
+    }
+    
+    return scored;
+}
+
+// Pick the next best move (swap it to position 'current')
+void pickNextMove(std::vector<ScoredMove>& moves, size_t current) {
+    if (current >= moves.size()) return;
+    
+    size_t best_idx = current;
+    int best_score = moves[current].score;
+    
+    for (size_t i = current + 1; i < moves.size(); ++i) {
+        if (moves[i].score > best_score) {
+            best_score = moves[i].score;
+            best_idx = i;
+        }
+    }
+    
+    if (best_idx != current) {
+        std::swap(moves[current], moves[best_idx]);
+    }
 }
 
 // ============= QUIESCENCE SEARCH =============
@@ -535,7 +551,6 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
     
     chess::Movelist tactical_moves;
     for (const auto& move : all_moves) {
-        // Include captures, promotions, and en passant
         if (board.at(move.to()) != chess::Piece::NONE || 
             move.typeOf() == chess::Move::PROMOTION ||
             move.typeOf() == chess::Move::ENPASSANT) {
@@ -543,9 +558,12 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
         }
     }
     
-    orderMoves(tactical_moves, board);
+    auto scored_moves = scoreMoves(tactical_moves, board);
     
-    for (const auto& move : tactical_moves) {
+    for (size_t i = 0; i < scored_moves.size(); ++i) {
+        pickNextMove(scored_moves, i);
+        const auto& move = scored_moves[i].move;
+        
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
         board.makeMove(move);
@@ -562,18 +580,16 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
     return alpha;
 }
 
-// ============= HELPER: CHECK IF MOVE IS QUIET =============
+// ============= HELPER FUNCTIONS =============
 bool isQuietMove(const chess::Board& board, const chess::Move& move) {
     return board.at(move.to()) == chess::Piece::NONE && 
            move.typeOf() != chess::Move::PROMOTION &&
            move.typeOf() != chess::Move::ENPASSANT;
 }
 
-// ============= NULL MOVE HELPER =============
 bool hasNonPawnMaterial(const chess::Board& board) {
     chess::Color side = board.sideToMove();
     
-    // Check if side to move has any pieces other than pawns and king
     if (board.pieces(chess::PieceType::KNIGHT, side).count() > 0) return true;
     if (board.pieces(chess::PieceType::BISHOP, side).count() > 0) return true;
     if (board.pieces(chess::PieceType::ROOK, side).count() > 0) return true;
@@ -583,19 +599,18 @@ bool hasNonPawnMaterial(const chess::Board& board) {
 }
 
 // ============= LMR REDUCTION TABLE =============
-int lmr_reductions[64][64];  // [depth][move_number]
+int lmr_reductions[64][64];
 
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
-            // Formula: reduction = 0.75 + ln(depth) * ln(move_num) / 2.25
             double reduction = 0.75 + std::log(depth) * std::log(move_num) / 2.25;
             lmr_reductions[depth][move_num] = static_cast<int>(reduction);
         }
     }
 }
 
-// ============= ALPPHA-BETA WITH LMR, NMP, CHECK EXTENSIONS, RFP, LMP, AND FUTILtITY =============
+// ============= ALPHA-BETA SEARCH =============
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root, 
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null) {
     stats.nodes++;
@@ -618,19 +633,18 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool in_check = board.inCheck();
     bool is_pv_node = (beta - alpha) > 1;
     
-    // Compute static evaluation once (used by RFP and Futility Pruning)
     int static_eval = 0;
     if (!in_check) {
         static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
     }
     
-    // ============= CHECK EXTENSION =============
+    // Check extension
     int extension = 0;
     if (in_check) {
-        extension = 1;  // Extend by 1 ply when in check
+        extension = 1;
     }
     
-    // ============= REVERSE FUTILITY PRUNING (RFP) =============
+    // Reverse futility pruning
     if (!is_pv_node &&
         !in_check &&
         depth <= 7 &&
@@ -644,7 +658,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
     
-    // ============= NULL MOVE PRUNING =============
+    // Null move pruning
     if (allow_null && 
         !in_check && 
         !is_pv_node &&
@@ -686,7 +700,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return getDrawScore(ply_from_root);
     }
     
-    orderMoves(moves, board, tt_move);
+    auto scored_moves = scoreMoves(moves, board, tt_move);
     
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -696,12 +710,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     
     int move_count = 0;
 
-    for (const auto& move : moves) {
+    for (size_t i = 0; i < scored_moves.size(); ++i) {
+        pickNextMove(scored_moves, i);
+        const auto& move = scored_moves[i].move;
+        
         move_count++;
         
         bool is_quiet = isQuietMove(board, move);
         
-        // ============= LATE MOVE PRUNING (LMP) =============
+        // Late move pruning
         if (!is_pv_node &&
             !in_check &&
             depth <= 8 &&
@@ -717,7 +734,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         
         bool gives_check = board.inCheck();
         
-        // ============= FUTILITY PRUNING =============
+        // Futility pruning
         if (!is_pv_node &&
             !in_check &&
             !gives_check &&
@@ -738,7 +755,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int eval;
         int new_depth = depth + extension - 1;
         
-        // LMR conditions
+        // LMR
         bool can_reduce = !in_check &&
                          is_quiet &&
                          move_count > 1 &&
@@ -847,6 +864,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     chess::Move best_move = moves[0];
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
+    
+    auto scored_moves = scoreMoves(moves, board);
 
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
@@ -862,7 +881,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         
         int alpha, beta;
         int delta = 25;
-        chess::Move depth_best_move = moves[0];
+        chess::Move depth_best_move = scored_moves[0].move;
         int score;
         
         bool search_again = true;
@@ -879,11 +898,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             
             stats.reset();
             
-            orderMoves(moves, board);
+            // Re-score moves with current TT move
+            scored_moves = scoreMoves(moves, board);
             
             score = -MATE_SCORE;
             
-            for (const auto& move : moves) {
+            for (size_t i = 0; i < scored_moves.size(); ++i) {
+                pickNextMove(scored_moves, i);
+                const auto& move = scored_moves[i].move;
+                
                 if (tm.should_stop()) {
                     std::cout << "info string time limit reached at depth " << depth << std::endl;
                     goto search_done;
@@ -947,11 +970,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         best_score = score;
         best_move = depth_best_move;
-        
-        auto it = std::find(moves.begin(), moves.end(), best_move);
-        if (it != moves.end() && it != moves.begin()) {
-            std::rotate(moves.begin(), it, it + 1);
-        }
         
         auto depth_end = std::chrono::high_resolution_clock::now();
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1017,8 +1035,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v2.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Move Ordering + TT (Fixed Zobrist) + Butterfly History + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
-    std::cout << "info string NNUE scale factor: 2 (dividing raw output by 2)" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1029,7 +1046,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
 
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v10.1-Fixed" << std::endl;
+            std::cout << "id name MyNNUEEngine v10.2-PickBest" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
