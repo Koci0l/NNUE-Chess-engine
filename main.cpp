@@ -231,7 +231,7 @@ int getDrawScore(int ply_from_root) {
     return CONTEMPT;
 }
 
-// ============= TIME MANAGEMENT =============
+// ============= IMPROVED TIME MANAGEMENT =============
 struct TimeManager {
     int time_left_ms;
     int increment_ms;
@@ -261,21 +261,29 @@ struct TimeManager {
         start_time = std::chrono::high_resolution_clock::now();
         
         if (movetime_ms > 0) {
+            // Fixed move time
             soft_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
             hard_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
         } else if (time_left_ms > 0) {
-            int moves_left = movestogo > 0 ? movestogo : 40;
-            int base_time = time_left_ms / std::max(20, moves_left);
-            int usable_increment = (increment_ms * 3) / 4;
+            // IMPROVED FORMULA: time/20 + inc/2
+            int base_time = (time_left_ms / 20) + (increment_ms / 2);
             
-            int optimal_time = base_time + usable_increment;
+            // Adjust for movestogo if close to time control
+            if (movestogo > 0 && movestogo <= 10) {
+                base_time = std::min(base_time, time_left_ms / (movestogo + 2));
+            }
             
-            soft_limit_ms = std::min(optimal_time * 3, time_left_ms / 3);
-            hard_limit_ms = std::min(optimal_time * 5, time_left_ms - MOVE_OVERHEAD_MS);
+            // Simple limits
+            soft_limit_ms = base_time;
+            hard_limit_ms = std::min(base_time * 4, time_left_ms / 3);
             
-            soft_limit_ms = std::max(MIN_THINKING_TIME, soft_limit_ms);
-            hard_limit_ms = std::max(soft_limit_ms, hard_limit_ms);
+            // Safety constraints
+            soft_limit_ms = std::max(MIN_THINKING_TIME, 
+                                    std::min(soft_limit_ms, time_left_ms - MOVE_OVERHEAD_MS));
+            hard_limit_ms = std::max(soft_limit_ms, 
+                                    std::min(hard_limit_ms, time_left_ms - MOVE_OVERHEAD_MS));
         } else {
+            // Infinite time
             soft_limit_ms = 999999;
             hard_limit_ms = 999999;
         }
@@ -293,10 +301,13 @@ struct TimeManager {
     bool should_continue_depth(int depth, double last_depth_ms) const {
         int64_t elapsed = elapsed_ms();
         
+        // Stop if we exceeded soft limit
         if (elapsed >= soft_limit_ms) return false;
         
-        double estimated_next = last_depth_ms * 4.0;
+        // Estimate next depth time (usually 3.5x previous)
+        double estimated_next = last_depth_ms * 3.5;
         
+        // Don't start what we can't finish
         if (elapsed + estimated_next > hard_limit_ms) return false;
         
         return true;
@@ -1156,7 +1167,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v2.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + Improved Time Management" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1167,7 +1178,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v12.0-CounterMoves" << std::endl;
+            std::cout << "id name MyNNUEEngine v13.0-TimeImproved" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
