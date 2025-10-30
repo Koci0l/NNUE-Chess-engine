@@ -80,7 +80,7 @@ struct ButterflyHistory {
 
 // ============= KILLER MOVES =============
 struct KillerMoves {
-    chess::Move killers[MAX_PLY][2];  // [ply][slot] - 2 killer moves per ply
+    chess::Move killers[MAX_PLY][2]; // [ply][slot] - 2 killer moves per ply
     
     KillerMoves() {
         clear();
@@ -118,12 +118,50 @@ struct KillerMoves {
     }
 };
 
+// ============= COUNTER MOVES =============
+struct CounterMoveHistory {
+    chess::Move table[64][64];  // [from][to] of previous move -> counter move
+    
+    CounterMoveHistory() {
+        clear();
+    }
+    
+    void clear() {
+        for (int i = 0; i < 64; ++i) {
+            for (int j = 0; j < 64; ++j) {
+                table[i][j] = chess::Move();
+            }
+        }
+    }
+    
+    void update(chess::Move previous_move, chess::Move counter_move) {
+        if (previous_move != chess::Move() && counter_move != chess::Move()) {
+            table[previous_move.from().index()][previous_move.to().index()] = counter_move;
+        }
+    }
+    
+    chess::Move get(chess::Move previous_move) const {
+        if (previous_move == chess::Move()) {
+            return chess::Move();
+        }
+        return table[previous_move.from().index()][previous_move.to().index()];
+    }
+    
+    bool is_counter(chess::Move previous_move, chess::Move move) const {
+        if (previous_move == chess::Move() || move == chess::Move()) {
+            return false;
+        }
+        return table[previous_move.from().index()][previous_move.to().index()] == move;
+    }
+};
+
 // Global tables
 ButterflyHistory g_butterflyHistory;
 KillerMoves g_killerMoves;
+CounterMoveHistory g_counterMoves;
 
 // ============= TRANSPOSITION TABLE GLOBALS =============
-size_t TT_SIZE = 1 << 20;  // Default 1M entries (~24MB)
+size_t TT_SIZE = 1 << 20; // Default 1M entries (~24MB)
 size_t TT_MASK = TT_SIZE - 1;
 
 enum TTFlag : uint8_t { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
@@ -513,10 +551,19 @@ struct ScoredMove {
     ScoredMove(chess::Move m, int s) : move(m), score(s) {}
 };
 
-int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move, 
-                         const chess::Move& tt_move, int ply) {
+struct MovePickerContext {
+    chess::Move tt_move;
+    chess::Move counter_move;
+    int ply;
+    
+    MovePickerContext(chess::Move tt, chess::Move counter, int p)
+        : tt_move(tt), counter_move(counter), ply(p) {}
+};
+
+int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
+                         const MovePickerContext& ctx) {
     // TT move gets highest priority
-    if (move == tt_move && tt_move != chess::Move()) {
+    if (move == ctx.tt_move && ctx.tt_move != chess::Move()) {
         return 1000000;
     }
     
@@ -539,9 +586,14 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
     }
     
     // Killer moves (only for quiet moves)
-    int killer_score = g_killerMoves.get_killer_score(ply, move);
+    int killer_score = g_killerMoves.get_killer_score(ctx.ply, move);
     if (killer_score > 0) {
         return 700000 + killer_score * 1000;  // Primary killer > Secondary killer
+    }
+    
+    // Counter move - check independently!
+    if (move == ctx.counter_move && ctx.counter_move != chess::Move()) {
+        return 650000;
     }
     
     // Quiet moves - use butterfly history
@@ -556,13 +608,13 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
 }
 
 // Score all moves once
-std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board, 
-                                   const chess::Move& tt_move = chess::Move(), int ply = 0) {
+std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board,
+                                   const MovePickerContext& ctx) {
     std::vector<ScoredMove> scored;
     scored.reserve(moves.size());
     
     for (const auto& move : moves) {
-        scored.emplace_back(move, scoreMoveForOrdering(board, move, tt_move, ply));
+        scored.emplace_back(move, scoreMoveForOrdering(board, move, ctx));
     }
     
     return scored;
@@ -587,6 +639,11 @@ void pickNextMove(std::vector<ScoredMove>& moves, size_t current) {
     }
 }
 
+// Forward declaration
+int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
+              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
+              chess::Move previous_move);
+
 // ============= QUIESCENCE SEARCH =============
 int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
@@ -608,7 +665,8 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
         }
     }
     
-    auto scored_moves = scoreMoves(tactical_moves, board, chess::Move(), ply_from_root);
+    MovePickerContext ctx(chess::Move(), chess::Move(), ply_from_root);
+    auto scored_moves = scoreMoves(tactical_moves, board, ctx);
     
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
@@ -632,7 +690,7 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
 
 // ============= HELPER FUNCTIONS =============
 bool isQuietMove(const chess::Board& board, const chess::Move& move) {
-    return board.at(move.to()) == chess::Piece::NONE && 
+    return board.at(move.to()) == chess::Piece::NONE &&
            move.typeOf() != chess::Move::PROMOTION &&
            move.typeOf() != chess::Move::ENPASSANT;
 }
@@ -661,8 +719,9 @@ void initLMR() {
 }
 
 // ============= ALPHA-BETA SEARCH =============
-int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root, 
-              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null) {
+int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
+              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
+              chess::Move previous_move) {
     stats.nodes++;
     
     if (tm && tm->should_stop()) return alpha;
@@ -724,8 +783,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         thread.accumulatorStack.push();
         thread.accumulatorStack.current() = saved_acc;
         
+        // Pass null move as "previous" since we're skipping our turn
         int null_score = -alphaBeta(board, depth - R - 1, -beta, -beta + 1, 
-                                    ply_from_root + 1, thread, tm, stats, false);
+                                    ply_from_root + 1, thread, tm, stats, false, chess::Move());
         
         thread.accumulatorStack.pop();
         board.unmakeNullMove();
@@ -741,16 +801,20 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (depth + extension <= 0) {
         return quiescence(board, alpha, beta, thread, ply_from_root, stats);
     }
-
+    
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
-
+    
     if (moves.empty()) {
         if (in_check) return -MATE_SCORE + ply_from_root;
         return getDrawScore(ply_from_root);
     }
     
-    auto scored_moves = scoreMoves(moves, board, tt_move, ply_from_root);
+    // Get counter move for this position
+    chess::Move counter_move = g_counterMoves.get(previous_move);
+    MovePickerContext ctx(tt_move, counter_move, ply_from_root);
+    
+    auto scored_moves = scoreMoves(moves, board, ctx);
     
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -759,7 +823,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     std::vector<chess::Move> quiets_searched;
     
     int move_count = 0;
-
+    
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
         const auto& move = scored_moves[i].move;
@@ -824,23 +888,23 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction = std::max(1, std::min(reduction, new_depth - 1));
             
             eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 
-                            ply_from_root + 1, thread, tm, stats, true);
+                            ply_from_root + 1, thread, tm, stats, true, move);
             
             if (eval > alpha) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha, 
-                                ply_from_root + 1, thread, tm, stats, true);
+                                ply_from_root + 1, thread, tm, stats, true, move);
             }
         } else {
             if (move_count == 1) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha, 
-                                ply_from_root + 1, thread, tm, stats, true);
+                                ply_from_root + 1, thread, tm, stats, true, move);
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 
-                                ply_from_root + 1, thread, tm, stats, true);
+                                ply_from_root + 1, thread, tm, stats, true, move);
                 
                 if (eval > alpha && eval < beta) {
                     eval = -alphaBeta(board, new_depth, -beta, -alpha, 
-                                    ply_from_root + 1, thread, tm, stats, true);
+                                    ply_from_root + 1, thread, tm, stats, true, move);
                 }
             }
         }
@@ -852,11 +916,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             best_score = eval;
             best_move = move;
         }
-
+        
         if (eval >= beta) {
-            // *** KILLER MOVE UPDATE - Store beta cutoff quiet moves ***
+            // Update killer moves and counter move for quiet beta cutoffs
             if (is_quiet) {
                 g_killerMoves.store(ply_from_root, move);
+                g_counterMoves.update(previous_move, move);  // Store as counter to opponent's last move
                 
                 int bonus = 32 * depth * depth;
                 
@@ -902,24 +967,26 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm) {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
-
+    
     if (moves.empty()) return chess::Move();
     if (moves.size() == 1) {
         std::cout << "info string only move" << std::endl;
         return moves[0];
     }
-
+    
     if (g_butterflyHistory.should_age()) {
         g_butterflyHistory.age();
         std::cout << "info string butterfly history aged" << std::endl;
     }
-
+    
     chess::Move best_move = moves[0];
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
     
-    auto scored_moves = scoreMoves(moves, board);
-
+    // No previous move at root (we don't know opponent's last move in UCI)
+    MovePickerContext ctx(chess::Move(), chess::Move(), 0);
+    auto scored_moves = scoreMoves(moves, board, ctx);
+    
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
         
@@ -928,7 +995,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                      << " (time: " << tm.elapsed_ms() << "ms)" << std::endl;
             break;
         }
-
+        
         SearchStats stats;
         stats.reset();
         
@@ -952,7 +1019,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             stats.reset();
             
             // Re-score moves with current TT move
-            scored_moves = scoreMoves(moves, board);
+            ctx.tt_move = best_move;  // Use best move from previous iteration
+            scored_moves = scoreMoves(moves, board, ctx);
             
             score = -MATE_SCORE;
             
@@ -975,12 +1043,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else {
-                    eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1, thread, &tm, stats, true);
+                    // At root, we pass the move we just made as "previous" for the next search
+                    eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1, thread, &tm, stats, true, move);
                 }
                 
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
-
+                
                 if (eval > score) {
                     score = eval;
                     depth_best_move = move;
@@ -1020,7 +1089,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 goto search_done;
             }
         }
-
+        
         best_score = score;
         best_move = depth_best_move;
         
@@ -1030,7 +1099,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         
         int64_t elapsed = tm.elapsed_ms();
         uint64_t nps = (elapsed > 0) ? (stats.nodes * 1000) / elapsed : 0;
-
+        
         auto pv_line = extractPV(board, depth);
         
         std::string pv_str;
@@ -1051,18 +1120,17 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         } else {
             score_str = "cp " + std::to_string(best_score);
         }
-
+        
         std::cout << "info score " << score_str
                   << " depth " << depth 
                   << " nodes " << stats.nodes
                   << " nps " << nps
                   << " time " << elapsed 
                   << " pv " << pv_str << std::endl;
-
+        
         tm.update_stability(best_move);
     }
-
-search_done:
+    search_done:
     return best_move;
 }
 
@@ -1080,7 +1148,7 @@ static bool is_integer(const std::string& s) {
 void uci_loop() {
     chess::Board board;
     ThreadInfo thread;
-
+    
     initZobrist();
     initLMR();
     initTT(64);
@@ -1088,18 +1156,18 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v2.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
-
+    
     std::string line;
     while (std::getline(std::cin, line)) {
         auto tokens = split(line, ' ');
         if (tokens.empty()) continue;
-
+        
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v11.0-Killers" << std::endl;
+            std::cout << "id name MyNNUEEngine v12.0-CounterMoves" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
@@ -1122,7 +1190,8 @@ void uci_loop() {
             thread.accumulatorStack.resetAccumulators(board);
             clearTT();
             g_butterflyHistory.clear();
-            g_killerMoves.clear();  // *** Clear killer moves for new game ***
+            g_killerMoves.clear();
+            g_counterMoves.clear();
             
         } else if (tokens[0] == "position") {
             int move_start_index = -1;
@@ -1144,9 +1213,9 @@ void uci_loop() {
                 }
                 board.setFen(fen_str);
             }
-
+            
             thread.accumulatorStack.resetAccumulators(board);
-
+            
             if (move_start_index != -1) {
                 for (int i = move_start_index; i < (int)tokens.size(); ++i) {
                     chess::Move move = chess::uci::uciToMove(board, tokens[i]);
@@ -1160,7 +1229,7 @@ void uci_loop() {
             int movetime = 0;
             int wtime = 0, btime = 0, winc = 0, binc = 0;
             int movestogo = 0;
-
+            
             for (size_t i = 1; i < tokens.size(); ++i) {
                 if (tokens[i] == "depth" && i + 1 < tokens.size() && is_integer(tokens[i + 1])) {
                     depth = std::max(1, std::stoi(tokens[i + 1]));
@@ -1196,10 +1265,10 @@ void uci_loop() {
             int mytime = (board.sideToMove() == chess::Color::WHITE) ? wtime : btime;
             int myinc = (board.sideToMove() == chess::Color::WHITE) ? winc : binc;
             tm.init(mytime, myinc, movestogo, movetime);
-
+            
             chess::Move best_move = search(board, depth, thread, tm);
             std::cout << "bestmove " << chess::uci::moveToUci(best_move) << std::endl;
-
+            
         } else if (tokens[0] == "quit") {
             break;
         }
