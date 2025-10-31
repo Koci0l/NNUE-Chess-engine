@@ -15,7 +15,6 @@ constexpr int DEFAULT_SEARCH_DEPTH = 5;
 constexpr int CONTEMPT = 0;
 constexpr int MAX_PLY = 100;
 
-// ============= NODE COUNTER =============
 struct SearchStats {
     uint64_t nodes;
     
@@ -26,12 +25,11 @@ struct SearchStats {
     }
 };
 
-// ============= BUTTERFLY HISTORY =============
 struct ButterflyHistory {
     static constexpr int HISTORY_MAX = 16384;
     static constexpr int HISTORY_GRAVITY = HISTORY_MAX;
     
-    int16_t table[64][64];  // [from][to]
+    int16_t table[2][64][64];
     
     ButterflyHistory() {
         clear();
@@ -41,36 +39,41 @@ struct ButterflyHistory {
         std::memset(table, 0, sizeof(table));
     }
     
-    int get(chess::Square from, chess::Square to) const {
-        return table[from.index()][to.index()];
+    int get(chess::Color color, chess::Square from, chess::Square to) const {
+        return table[static_cast<int>(color)][from.index()][to.index()];
     }
     
-    void update(chess::Square from, chess::Square to, int bonus) {
+    void update(chess::Color color, chess::Square from, chess::Square to, int bonus) {
+        int c = static_cast<int>(color);
         int f = from.index();
         int t = to.index();
         
-        int cur = table[f][t];
+        int cur = table[c][f][t];
         
         int delta = bonus - (cur * std::abs(bonus)) / HISTORY_GRAVITY;
         int next = cur + delta;
         
         next = std::max(-HISTORY_MAX, std::min(HISTORY_MAX, next));
-        table[f][t] = static_cast<int16_t>(next);
+        table[c][f][t] = static_cast<int16_t>(next);
     }
     
     void age() {
-        for (int i = 0; i < 64; ++i) {
-            for (int j = 0; j < 64; ++j) {
-                table[i][j] /= 2;
+        for (int c = 0; c < 2; ++c) {
+            for (int i = 0; i < 64; ++i) {
+                for (int j = 0; j < 64; ++j) {
+                    table[c][i][j] /= 2;
+                }
             }
         }
     }
     
     bool should_age() const {
-        for (int i = 0; i < 64; ++i) {
-            for (int j = 0; j < 64; ++j) {
-                if (std::abs(table[i][j]) > (HISTORY_MAX * 7) / 8) {
-                    return true;
+        for (int c = 0; c < 2; ++c) {
+            for (int i = 0; i < 64; ++i) {
+                for (int j = 0; j < 64; ++j) {
+                    if (std::abs(table[c][i][j]) > (HISTORY_MAX * 7) / 8) {
+                        return true;
+                    }
                 }
             }
         }
@@ -78,9 +81,8 @@ struct ButterflyHistory {
     }
 };
 
-// ============= KILLER MOVES =============
 struct KillerMoves {
-    chess::Move killers[MAX_PLY][2]; // [ply][slot] - 2 killer moves per ply
+    chess::Move killers[MAX_PLY][2];
     
     KillerMoves() {
         clear();
@@ -94,12 +96,10 @@ struct KillerMoves {
     }
     
     void store(int ply, chess::Move move) {
-        // Don't store if already in slot 0
         if (move == killers[ply][0]) {
             return;
         }
         
-        // Shift: slot 0 -> slot 1, new move -> slot 0
         killers[ply][1] = killers[ply][0];
         killers[ply][0] = move;
     }
@@ -112,15 +112,14 @@ struct KillerMoves {
     int get_killer_score(int ply, chess::Move move) const {
         if (ply >= MAX_PLY) return 0;
         
-        if (move == killers[ply][0]) return 2;  // Primary killer
-        if (move == killers[ply][1]) return 1;  // Secondary killer
+        if (move == killers[ply][0]) return 2;
+        if (move == killers[ply][1]) return 1;
         return 0;
     }
 };
 
-// ============= COUNTER MOVES =============
 struct CounterMoveHistory {
-    chess::Move table[64][64];  // [from][to] of previous move -> counter move
+    chess::Move table[64][64];
     
     CounterMoveHistory() {
         clear();
@@ -155,13 +154,11 @@ struct CounterMoveHistory {
     }
 };
 
-// Global tables
 ButterflyHistory g_butterflyHistory;
 KillerMoves g_killerMoves;
 CounterMoveHistory g_counterMoves;
 
-// ============= TRANSPOSITION TABLE GLOBALS =============
-size_t TT_SIZE = 1 << 20; // Default 1M entries (~24MB)
+size_t TT_SIZE = 1 << 20;
 size_t TT_MASK = TT_SIZE - 1;
 
 enum TTFlag : uint8_t { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
@@ -179,11 +176,9 @@ struct TTEntry {
 TTEntry* tt = nullptr;
 
 void initTT(size_t mb) {
-    // Convert MB to number of entries
     size_t bytes = mb * 1024 * 1024;
     size_t entries = bytes / sizeof(TTEntry);
     
-    // Round down to power of 2
     size_t power = 1;
     while (power * 2 <= entries) {
         power *= 2;
@@ -218,7 +213,6 @@ std::vector<std::string> split(const std::string& s, char delimiter) {
     return tokens;
 }
 
-// ============= DRAW DETECTION =============
 bool isDrawByRepetition(const chess::Board& board) {
     return board.isRepetition(1);
 }
@@ -231,7 +225,6 @@ int getDrawScore(int ply_from_root) {
     return CONTEMPT;
 }
 
-// ============= IMPROVED TIME MANAGEMENT =============
 struct TimeManager {
     int time_left_ms;
     int increment_ms;
@@ -261,29 +254,23 @@ struct TimeManager {
         start_time = std::chrono::high_resolution_clock::now();
         
         if (movetime_ms > 0) {
-            // Fixed move time
             soft_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
             hard_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
         } else if (time_left_ms > 0) {
-            // IMPROVED FORMULA: time/20 + inc/2
             int base_time = (time_left_ms / 20) + (increment_ms / 2);
             
-            // Adjust for movestogo if close to time control
             if (movestogo > 0 && movestogo <= 10) {
                 base_time = std::min(base_time, time_left_ms / (movestogo + 2));
             }
             
-            // Simple limits
             soft_limit_ms = base_time;
             hard_limit_ms = std::min(base_time * 4, time_left_ms / 3);
             
-            // Safety constraints
             soft_limit_ms = std::max(MIN_THINKING_TIME, 
                                     std::min(soft_limit_ms, time_left_ms - MOVE_OVERHEAD_MS));
             hard_limit_ms = std::max(soft_limit_ms, 
                                     std::min(hard_limit_ms, time_left_ms - MOVE_OVERHEAD_MS));
         } else {
-            // Infinite time
             soft_limit_ms = 999999;
             hard_limit_ms = 999999;
         }
@@ -301,13 +288,10 @@ struct TimeManager {
     bool should_continue_depth(int depth, double last_depth_ms) const {
         int64_t elapsed = elapsed_ms();
         
-        // Stop if we exceeded soft limit
         if (elapsed >= soft_limit_ms) return false;
         
-        // Estimate next depth time (usually 3.5x previous)
         double estimated_next = last_depth_ms * 3.5;
         
-        // Don't start what we can't finish
         if (elapsed + estimated_next > hard_limit_ms) return false;
         
         return true;
@@ -323,7 +307,6 @@ struct TimeManager {
     }
 };
 
-// ============= ZOBRIST HASHING =============
 uint64_t zobrist_piece[12][64];
 uint64_t zobrist_side;
 uint64_t zobrist_castling[16];
@@ -383,12 +366,10 @@ uint64_t getZobristHash(const chess::Board& board) {
     return hash;
 }
 
-// ============= NNUE SCALING =============
 inline int scaleNNUE(int raw_score) {
     return raw_score / 2;
 }
 
-// ============= TT FUNCTIONS =============
 void storeTT(uint64_t key, int depth, int score, chess::Move best_move, TTFlag flag, int ply_from_root) {
     size_t index = key & TT_MASK;
     TTEntry& entry = tt[index];
@@ -446,7 +427,6 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score, chess::Mo
     return false;
 }
 
-// ============= PV EXTRACTION =============
 std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
     std::vector<chess::Move> pv;
     
@@ -487,7 +467,6 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
     return pv;
 }
 
-// ============= ACCUMULATOR UPDATE =============
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move) {
     auto moveType = move.typeOf();
     
@@ -546,7 +525,6 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, c
     }
 }
 
-// ============= MOVE ORDERING WITH INCREMENTAL SELECTION =============
 int pieceValue(chess::PieceType pt) {
     static const int values[] = {100, 320, 330, 500, 900, 20000};
     int idx = static_cast<int>(pt);
@@ -565,25 +543,23 @@ struct ScoredMove {
 struct MovePickerContext {
     chess::Move tt_move;
     chess::Move counter_move;
+    chess::Color side_to_move;
     int ply;
     
-    MovePickerContext(chess::Move tt, chess::Move counter, int p)
-        : tt_move(tt), counter_move(counter), ply(p) {}
+    MovePickerContext(chess::Move tt, chess::Move counter, chess::Color stm, int p)
+        : tt_move(tt), counter_move(counter), side_to_move(stm), ply(p) {}
 };
 
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx) {
-    // TT move gets highest priority
     if (move == ctx.tt_move && ctx.tt_move != chess::Move()) {
         return 1000000;
     }
     
-    // Promotions
     if (move.typeOf() == chess::Move::PROMOTION) {
         return 900000 + pieceValue(move.promotionType());
     }
     
-    // Captures (MVV-LVA)
     chess::Piece captured = board.at(move.to());
     if (captured != chess::Piece::NONE) {
         int victimValue = pieceValue(captured.type());
@@ -591,26 +567,21 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
         return 800000 + victimValue * 10 - attackerValue;
     }
     
-    // En passant captures
     if (move.typeOf() == chess::Move::ENPASSANT) {
         return 800000 + 100;
     }
     
-    // Killer moves (only for quiet moves)
     int killer_score = g_killerMoves.get_killer_score(ctx.ply, move);
     if (killer_score > 0) {
-        return 700000 + killer_score * 1000;  // Primary killer > Secondary killer
+        return 700000 + killer_score * 1000;
     }
     
-    // Counter move - check independently!
     if (move == ctx.counter_move && ctx.counter_move != chess::Move()) {
         return 650000;
     }
     
-    // Quiet moves - use butterfly history
-    int score = g_butterflyHistory.get(move.from(), move.to());
+    int score = g_butterflyHistory.get(ctx.side_to_move, move.from(), move.to());
     
-    // Small bonus for castling
     if (move.typeOf() == chess::Move::CASTLING) {
         score += 50;
     }
@@ -618,7 +589,6 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
     return score;
 }
 
-// Score all moves once
 std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Board& board,
                                    const MovePickerContext& ctx) {
     std::vector<ScoredMove> scored;
@@ -631,7 +601,6 @@ std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves, const chess::Bo
     return scored;
 }
 
-// Pick the next best move (swap it to position 'current')
 void pickNextMove(std::vector<ScoredMove>& moves, size_t current) {
     if (current >= moves.size()) return;
     
@@ -650,12 +619,10 @@ void pickNextMove(std::vector<ScoredMove>& moves, size_t current) {
     }
 }
 
-// Forward declaration
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move);
 
-// ============= QUIESCENCE SEARCH =============
 int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
     
@@ -676,7 +643,7 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
         }
     }
     
-    MovePickerContext ctx(chess::Move(), chess::Move(), ply_from_root);
+    MovePickerContext ctx(chess::Move(), chess::Move(), board.sideToMove(), ply_from_root);
     auto scored_moves = scoreMoves(tactical_moves, board, ctx);
     
     for (size_t i = 0; i < scored_moves.size(); ++i) {
@@ -699,7 +666,6 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
     return alpha;
 }
 
-// ============= HELPER FUNCTIONS =============
 bool isQuietMove(const chess::Board& board, const chess::Move& move) {
     return board.at(move.to()) == chess::Piece::NONE &&
            move.typeOf() != chess::Move::PROMOTION &&
@@ -717,7 +683,6 @@ bool hasNonPawnMaterial(const chess::Board& board) {
     return false;
 }
 
-// ============= LMR REDUCTION TABLE =============
 int lmr_reductions[64][64];
 
 void initLMR() {
@@ -729,7 +694,6 @@ void initLMR() {
     }
 }
 
-// ============= ALPHA-BETA SEARCH =============
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move) {
@@ -758,13 +722,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
     }
     
-    // Check extension
     int extension = 0;
     if (in_check) {
         extension = 1;
     }
     
-    // Reverse futility pruning
     if (!is_pv_node &&
         !in_check &&
         depth <= 7 &&
@@ -778,7 +740,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
     
-    // Null move pruning
     if (allow_null && 
         !in_check && 
         !is_pv_node &&
@@ -794,7 +755,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         thread.accumulatorStack.push();
         thread.accumulatorStack.current() = saved_acc;
         
-        // Pass null move as "previous" since we're skipping our turn
         int null_score = -alphaBeta(board, depth - R - 1, -beta, -beta + 1, 
                                     ply_from_root + 1, thread, tm, stats, false, chess::Move());
         
@@ -821,9 +781,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return getDrawScore(ply_from_root);
     }
     
-    // Get counter move for this position
     chess::Move counter_move = g_counterMoves.get(previous_move);
-    MovePickerContext ctx(tt_move, counter_move, ply_from_root);
+    chess::Color side_to_move = board.sideToMove();
+    MovePickerContext ctx(tt_move, counter_move, side_to_move, ply_from_root);
     
     auto scored_moves = scoreMoves(moves, board, ctx);
     
@@ -839,19 +799,33 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         pickNextMove(scored_moves, i);
         const auto& move = scored_moves[i].move;
         
-        move_count++;
-        
         bool is_quiet = isQuietMove(board, move);
         
-        // Late move pruning
+        if (!is_pv_node &&
+            !in_check &&
+            depth <= 4 &&
+            is_quiet &&
+            move_count >= 3 &&
+            move != tt_move) {
+            
+            int hist_score = g_butterflyHistory.get(side_to_move, move.from(), move.to());
+            int threshold = -2000 * depth;
+            
+            if (hist_score < threshold) {
+                continue;
+            }
+        }
+        
         if (!is_pv_node &&
             !in_check &&
             depth <= 8 &&
             is_quiet &&
             move != tt_move &&
             move_count >= 5 + 2 * depth * depth) {
-            continue;
+            break;
         }
+        
+        move_count++;
         
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
@@ -859,7 +833,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         
         bool gives_check = board.inCheck();
         
-        // Futility pruning
         if (!is_pv_node &&
             !in_check &&
             !gives_check &&
@@ -880,7 +853,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int eval;
         int new_depth = depth + extension - 1;
         
-        // LMR
         bool can_reduce = !in_check &&
                          is_quiet &&
                          move_count > 1 &&
@@ -929,17 +901,16 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
         
         if (eval >= beta) {
-            // Update killer moves and counter move for quiet beta cutoffs
             if (is_quiet) {
                 g_killerMoves.store(ply_from_root, move);
-                g_counterMoves.update(previous_move, move);  // Store as counter to opponent's last move
+                g_counterMoves.update(previous_move, move);
                 
                 int bonus = 32 * depth * depth;
                 
-                g_butterflyHistory.update(move.from(), move.to(), bonus);
+                g_butterflyHistory.update(side_to_move, move.from(), move.to(), bonus);
                 
                 for (const auto& quiet : quiets_searched) {
-                    g_butterflyHistory.update(quiet.from(), quiet.to(), -bonus / 2);
+                    g_butterflyHistory.update(side_to_move, quiet.from(), quiet.to(), -bonus / 2);
                 }
             }
             
@@ -959,11 +930,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (best_score > original_alpha && isQuietMove(board, best_move)) {
         int bonus = 8 * depth * depth;
         
-        g_butterflyHistory.update(best_move.from(), best_move.to(), bonus);
+        g_butterflyHistory.update(side_to_move, best_move.from(), best_move.to(), bonus);
         
         for (const auto& quiet : quiets_searched) {
             if (quiet != best_move) {
-                g_butterflyHistory.update(quiet.from(), quiet.to(), -bonus / 4);
+                g_butterflyHistory.update(side_to_move, quiet.from(), quiet.to(), -bonus / 4);
             }
         }
     }
@@ -974,7 +945,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     return best_score;
 }
 
-// ============= ROOT SEARCH WITH ASPIRATION WINDOWS =============
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm) {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
@@ -994,8 +964,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
     
-    // No previous move at root (we don't know opponent's last move in UCI)
-    MovePickerContext ctx(chess::Move(), chess::Move(), 0);
+    MovePickerContext ctx(chess::Move(), chess::Move(), board.sideToMove(), 0);
     auto scored_moves = scoreMoves(moves, board, ctx);
     
     for (int depth = 1; depth <= max_depth; ++depth) {
@@ -1029,8 +998,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             
             stats.reset();
             
-            // Re-score moves with current TT move
-            ctx.tt_move = best_move;  // Use best move from previous iteration
+            ctx.tt_move = best_move;
             scored_moves = scoreMoves(moves, board, ctx);
             
             score = -MATE_SCORE;
@@ -1054,7 +1022,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else {
-                    // At root, we pass the move we just made as "previous" for the next search
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1, thread, &tm, stats, true, move);
                 }
                 
@@ -1167,7 +1134,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v2.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + Improved Time Management" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1178,7 +1145,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v13.0-TimeImproved" << std::endl;
+            std::cout << "id name MyNNUEEngine v16.0-ColorIndexedHistory" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
