@@ -625,44 +625,56 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
 int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
-    
-    int stand_pat = scaleNNUE(g_nnue.evaluate(board, thread));
-    
-    if (stand_pat >= beta) return beta;
-    if (alpha < stand_pat) alpha = stand_pat;
-    
+
+    bool in_check = board.inCheck();
+
+    int stand_pat = 0;
+    if (!in_check) {
+        stand_pat = scaleNNUE(g_nnue.evaluate(board, thread));
+        if (stand_pat >= beta) return beta;
+        if (alpha < stand_pat) alpha = stand_pat;
+    }
+
     chess::Movelist all_moves;
     chess::movegen::legalmoves(all_moves, board);
-    
-    chess::Movelist tactical_moves;
-    for (const auto& move : all_moves) {
-        if (board.at(move.to()) != chess::Piece::NONE || 
-            move.typeOf() == chess::Move::PROMOTION ||
-            move.typeOf() == chess::Move::ENPASSANT) {
-            tactical_moves.add(move);
-        }
-    }
-    
+
     MovePickerContext ctx(chess::Move(), chess::Move(), board.sideToMove(), ply_from_root);
-    auto scored_moves = scoreMoves(tactical_moves, board, ctx);
-    
+    std::vector<ScoredMove> scored_moves;
+
+    if (in_check) {
+        if (all_moves.empty()) {
+            return -MATE_SCORE + ply_from_root;
+        }
+        scored_moves = scoreMoves(all_moves, board, ctx);
+    } else {
+        chess::Movelist tactical_moves;
+        for (const auto& move : all_moves) {
+            if (board.at(move.to()) != chess::Piece::NONE ||
+                move.typeOf() == chess::Move::PROMOTION ||
+                move.typeOf() == chess::Move::ENPASSANT) {
+                tactical_moves.add(move);
+            }
+        }
+        scored_moves = scoreMoves(tactical_moves, board, ctx);
+    }
+
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
         const auto& move = scored_moves[i].move;
-        
+
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
         board.makeMove(move);
-        
+
         int eval = -quiescence(board, -beta, -alpha, thread, ply_from_root + 1, stats);
-        
+
         board.unmakeMove(move);
         thread.accumulatorStack.pop();
-        
+
         if (eval >= beta) return beta;
         if (eval > alpha) alpha = eval;
     }
-    
+
     return alpha;
 }
 
