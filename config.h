@@ -13,7 +13,7 @@ enum ActivationFn { ReLU, CReLU, SCRELU };
 
 constexpr ActivationFn ACTIVATION = SCRELU;
 constexpr usize INPUT_SIZE     = 768;
-constexpr usize HL_SIZE        = 128;
+constexpr usize HL_SIZE        = 1024;
 constexpr i16   QA             = 255;
 constexpr i16   QB             = 64;
 constexpr int   EVAL_SCALE     = 400;

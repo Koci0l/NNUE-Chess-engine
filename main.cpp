@@ -1144,7 +1144,7 @@ void uci_loop() {
     initTT(64);
     
     std::cout << "info string Loading NNUE..." << std::endl;
-    g_nnue.loadNetwork("quantised-v2.bin");
+    g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
     std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management" << std::endl;
     
