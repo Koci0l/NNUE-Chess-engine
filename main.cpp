@@ -381,7 +381,7 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move, TTFlag f
         stored_score = score - ply_from_root;
     }
     
-    if (entry.key != key || entry.depth < depth) {
+    if (entry.key == 0 || entry.key == key || depth >= entry.depth + 3) {
         entry.key = key;
         entry.depth = depth;
         entry.score = stored_score;
