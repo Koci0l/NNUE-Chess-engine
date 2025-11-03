@@ -381,7 +381,7 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move, TTFlag f
         stored_score = score - ply_from_root;
     }
     
-    if (entry.key != key || entry.depth < depth) {
+    if (entry.key == 0 || entry.key == key || depth >= entry.depth + 3) {
         entry.key = key;
         entry.depth = depth;
         entry.score = stored_score;
@@ -1144,7 +1144,7 @@ void uci_loop() {
     initTT(64);
     
     std::cout << "info string Loading NNUE..." << std::endl;
-    g_nnue.loadNetwork("quantised-v2.bin");
+    g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
     std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management" << std::endl;
     
