@@ -10,6 +10,274 @@
 #include "chess.hpp"
 #include "nnue.h"
 
+// Helper function for opposite color
+inline chess::Color oppColor(chess::Color c) {
+    return c == chess::Color::WHITE ? chess::Color::BLACK : chess::Color::WHITE;
+}
+
+// Simple attack generators for SEE
+namespace see_attacks {
+    using namespace chess;
+    
+    inline Bitboard pawnAttacks(Color c, Square sq) {
+        Bitboard attacks(0ULL);
+        int f = static_cast<int>(sq.file());
+        int r = static_cast<int>(sq.rank());
+        
+        if (c == Color::WHITE) {
+            if (f > 0 && r < 7) attacks |= Bitboard::fromSquare(Square(f - 1 + (r + 1) * 8));
+            if (f < 7 && r < 7) attacks |= Bitboard::fromSquare(Square(f + 1 + (r + 1) * 8));
+        } else {
+            if (f > 0 && r > 0) attacks |= Bitboard::fromSquare(Square(f - 1 + (r - 1) * 8));
+            if (f < 7 && r > 0) attacks |= Bitboard::fromSquare(Square(f + 1 + (r - 1) * 8));
+        }
+        return attacks;
+    }
+
+    inline Bitboard knightAttacks(Square sq) {
+        Bitboard attacks(0ULL);
+        int f = static_cast<int>(sq.file());
+        int r = static_cast<int>(sq.rank());
+        int deltas[8][2] = {{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}};
+        for (int i = 0; i < 8; ++i) {
+            int nf = f + deltas[i][0], nr = r + deltas[i][1];
+            if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
+                attacks |= Bitboard::fromSquare(Square(nf + nr * 8));
+            }
+        }
+        return attacks;
+    }
+
+    inline Bitboard kingAttacks(Square sq) {
+        Bitboard attacks(0ULL);
+        int f = static_cast<int>(sq.file());
+        int r = static_cast<int>(sq.rank());
+        for (int df = -1; df <= 1; ++df) {
+            for (int dr = -1; dr <= 1; ++dr) {
+                if (df == 0 && dr == 0) continue;
+                int nf = f + df, nr = r + dr;
+                if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
+                    attacks |= Bitboard::fromSquare(Square(nf + nr * 8));
+                }
+            }
+        }
+        return attacks;
+    }
+
+    inline Bitboard getBishopAttacks(Square sq, Bitboard occ) {
+        Bitboard attacks(0ULL);
+        int f = static_cast<int>(sq.file());
+        int r = static_cast<int>(sq.rank());
+        
+        // NE
+        for (int d = 1; d < 8; ++d) {
+            int nf = f + d, nr = r + d;
+            if (nf >= 8 || nr >= 8) break;
+            Square nsq(nf + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // NW
+        for (int d = 1; d < 8; ++d) {
+            int nf = f - d, nr = r + d;
+            if (nf < 0 || nr >= 8) break;
+            Square nsq(nf + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // SE
+        for (int d = 1; d < 8; ++d) {
+            int nf = f + d, nr = r - d;
+            if (nf >= 8 || nr < 0) break;
+            Square nsq(nf + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // SW
+        for (int d = 1; d < 8; ++d) {
+            int nf = f - d, nr = r - d;
+            if (nf < 0 || nr < 0) break;
+            Square nsq(nf + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        return attacks;
+    }
+
+    inline Bitboard getRookAttacks(Square sq, Bitboard occ) {
+        Bitboard attacks(0ULL);
+        int f = static_cast<int>(sq.file());
+        int r = static_cast<int>(sq.rank());
+        
+        // North
+        for (int nr = r + 1; nr < 8; ++nr) {
+            Square nsq(f + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // South
+        for (int nr = r - 1; nr >= 0; --nr) {
+            Square nsq(f + nr * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // East
+        for (int nf = f + 1; nf < 8; ++nf) {
+            Square nsq(nf + r * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        // West
+        for (int nf = f - 1; nf >= 0; --nf) {
+            Square nsq(nf + r * 8);
+            attacks |= Bitboard::fromSquare(nsq);
+            if (occ & Bitboard::fromSquare(nsq)) break;
+        }
+        return attacks;
+    }
+}
+
+// SEE Implementation
+namespace chess::see {
+    inline int value(PieceType pt) {
+        static const int values[] = {100, 320, 330, 500, 900, 20000};
+        int idx = static_cast<int>(pt);
+        if (idx >= 0 && idx < 6) return values[idx];
+        return 0;
+    }
+
+    inline int gain(const Board& board, const Move& move) {
+        const auto type = move.typeOf();
+
+        if (type == Move::CASTLING) {
+            return 0;
+        } else if (type == Move::ENPASSANT) {
+            return value(PieceType::PAWN);
+        }
+
+        auto score = board.at(move.to()) != Piece::NONE ? value(board.at(move.to()).type()) : 0;
+
+        if (type == Move::PROMOTION) {
+            score += value(move.promotionType()) - value(PieceType::PAWN);
+        }
+
+        return score;
+    }
+
+    // Explicit LVA order
+    constexpr std::array<PieceType, 6> lvaOrder = {
+        PieceType::PAWN, PieceType::KNIGHT, PieceType::BISHOP,
+        PieceType::ROOK, PieceType::QUEEN, PieceType::KING
+    };
+
+    inline PieceType popLeastValuable(
+        const Board& board,
+        Bitboard& occ,
+        Bitboard& attackers,
+        Color color
+    ) {
+        for (auto pt : lvaOrder) {
+            auto piece_bb = board.pieces(pt, color);
+            auto candidates = attackers & piece_bb;
+            if (candidates.count() > 0) {
+                Square from = candidates.lsb();
+                occ ^= Bitboard::fromSquare(from);
+                attackers ^= Bitboard::fromSquare(from);
+                return pt;
+            }
+        }
+        return PieceType::NONE;
+    }
+
+    inline Bitboard attackersTo(const Board& board, Square sq, Bitboard occ) {
+        Bitboard atk(0ULL);
+
+        // Pawns
+        atk |= see_attacks::pawnAttacks(Color::WHITE, sq) & board.pieces(PieceType::PAWN, Color::BLACK);
+        atk |= see_attacks::pawnAttacks(Color::BLACK, sq) & board.pieces(PieceType::PAWN, Color::WHITE);
+
+        // Knights
+        atk |= see_attacks::knightAttacks(sq) & (board.pieces(PieceType::KNIGHT, Color::WHITE) | board.pieces(PieceType::KNIGHT, Color::BLACK));
+
+        // Kings
+        atk |= see_attacks::kingAttacks(sq) & (board.pieces(PieceType::KING, Color::WHITE) | board.pieces(PieceType::KING, Color::BLACK));
+
+        // Bishops/Queens
+        Bitboard bishopsQueens = board.pieces(PieceType::BISHOP, Color::WHITE) | board.pieces(PieceType::QUEEN, Color::WHITE) |
+                                 board.pieces(PieceType::BISHOP, Color::BLACK) | board.pieces(PieceType::QUEEN, Color::BLACK);
+        atk |= see_attacks::getBishopAttacks(sq, occ) & bishopsQueens;
+
+        // Rooks/Queens
+        Bitboard rooksQueens = board.pieces(PieceType::ROOK, Color::WHITE) | board.pieces(PieceType::QUEEN, Color::WHITE) |
+                               board.pieces(PieceType::ROOK, Color::BLACK) | board.pieces(PieceType::QUEEN, Color::BLACK);
+        atk |= see_attacks::getRookAttacks(sq, occ) & rooksQueens;
+
+        return atk;
+    }
+
+    inline bool see_ge(const Board& board, const Move& move, int threshold) {
+        auto score = gain(board, move) - threshold;
+        if (score < 0) return false;
+
+        PieceType next = (move.typeOf() == Move::PROMOTION) ? move.promotionType() : board.at(move.from()).type();
+        score -= value(next);
+        if (score >= 0) return true;
+
+        Square square = move.to();
+        
+        // Get all pieces bitboard
+        Bitboard occupancy = board.pieces(PieceType::PAWN, Color::WHITE) | board.pieces(PieceType::PAWN, Color::BLACK) |
+                            board.pieces(PieceType::KNIGHT, Color::WHITE) | board.pieces(PieceType::KNIGHT, Color::BLACK) |
+                            board.pieces(PieceType::BISHOP, Color::WHITE) | board.pieces(PieceType::BISHOP, Color::BLACK) |
+                            board.pieces(PieceType::ROOK, Color::WHITE) | board.pieces(PieceType::ROOK, Color::BLACK) |
+                            board.pieces(PieceType::QUEEN, Color::WHITE) | board.pieces(PieceType::QUEEN, Color::BLACK) |
+                            board.pieces(PieceType::KING, Color::WHITE) | board.pieces(PieceType::KING, Color::BLACK);
+        
+        occupancy ^= Bitboard::fromSquare(move.from());
+        occupancy ^= Bitboard::fromSquare(square);
+
+        Bitboard queens = board.pieces(PieceType::QUEEN, Color::WHITE) | board.pieces(PieceType::QUEEN, Color::BLACK);
+        Bitboard bishops = queens | board.pieces(PieceType::BISHOP, Color::WHITE) | board.pieces(PieceType::BISHOP, Color::BLACK);
+        Bitboard rooks = queens | board.pieces(PieceType::ROOK, Color::WHITE) | board.pieces(PieceType::ROOK, Color::BLACK);
+
+        Bitboard attackers = attackersTo(board, square, occupancy);
+
+        Color us = oppColor(board.sideToMove());
+
+        while (true) {
+            Bitboard ourAttackers = attackers;
+
+            if (ourAttackers.count() == 0) break;
+
+            next = popLeastValuable(board, occupancy, ourAttackers, us);
+
+            if (next == PieceType::NONE) break;
+
+            if (next == PieceType::PAWN || next == PieceType::BISHOP || next == PieceType::QUEEN) {
+                attackers |= see_attacks::getBishopAttacks(square, occupancy) & bishops;
+            }
+
+            if (next == PieceType::ROOK || next == PieceType::QUEEN) {
+                attackers |= see_attacks::getRookAttacks(square, occupancy) & rooks;
+            }
+
+            attackers &= occupancy;
+
+            score = -score - 1 - value(next);
+            us = oppColor(us);
+
+            if (score >= 0) {
+                if (next == PieceType::KING && attackers.count() > 0) {
+                    us = oppColor(us);
+                }
+                break;
+            }
+        }
+
+        return board.sideToMove() != us;
+    }
+}
+
 constexpr int MATE_SCORE = 30000;
 constexpr int DEFAULT_SEARCH_DEPTH = 5;
 constexpr int CONTEMPT = 0;
@@ -561,10 +829,14 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
     }
     
     chess::Piece captured = board.at(move.to());
-    if (captured != chess::Piece::NONE) {
-        int victimValue = pieceValue(captured.type());
+    bool is_tactical = captured != chess::Piece::NONE || move.typeOf() == chess::Move::ENPASSANT || move.typeOf() == chess::Move::PROMOTION;
+    
+    if (is_tactical) {
+        // Use SEE for capture ordering
+        int see_score = chess::see::see_ge(board, move, 0) ? 100 : (chess::see::see_ge(board, move, -50) ? 0 : -100);
+        int victimValue = captured != chess::Piece::NONE ? pieceValue(captured.type()) : 100;
         int attackerValue = pieceValue(board.at(move.from()).type());
-        return 800000 + victimValue * 10 - attackerValue;
+        return 800000 + see_score * 1000 + victimValue * 10 - attackerValue;
     }
     
     if (move.typeOf() == chess::Move::ENPASSANT) {
@@ -649,9 +921,10 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
     } else {
         chess::Movelist tactical_moves;
         for (const auto& move : all_moves) {
-            if (board.at(move.to()) != chess::Piece::NONE ||
-                move.typeOf() == chess::Move::PROMOTION ||
-                move.typeOf() == chess::Move::ENPASSANT) {
+            bool is_tactical = board.at(move.to()) != chess::Piece::NONE ||
+                               move.typeOf() == chess::Move::PROMOTION ||
+                               move.typeOf() == chess::Move::ENPASSANT;
+            if (is_tactical) {
                 tactical_moves.add(move);
             }
         }
@@ -661,6 +934,14 @@ int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
         const auto& move = scored_moves[i].move;
+
+        // SEE pruning for non-check tactical moves
+        bool is_tactical = board.at(move.to()) != chess::Piece::NONE ||
+                           move.typeOf() == chess::Move::PROMOTION ||
+                           move.typeOf() == chess::Move::ENPASSANT;
+        if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0)) {
+            continue;
+        }
 
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
@@ -812,6 +1093,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         const auto& move = scored_moves[i].move;
         
         bool is_quiet = isQuietMove(board, move);
+        
+        // SEE pruning for non-PV noisy moves
+        bool is_noisy = !is_quiet;
+        if (!is_pv_node && !in_check && is_noisy && !chess::see::see_ge(board, move, 0)) {
+            continue;
+        }
         
         if (!is_pv_node &&
             !in_check &&
@@ -1146,7 +1433,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management + SEE Pruning & Ordering" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1157,7 +1444,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v16.0-ColorIndexedHistory" << std::endl;
+            std::cout << "id name MyNNUEEngine v17.0-SEE" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
