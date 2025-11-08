@@ -7,6 +7,7 @@
 #include <random>
 #include <cstring>
 #include <cmath>
+#include <array>
 #include "chess.hpp"
 #include "nnue.h"
 
@@ -695,6 +696,81 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score, chess::Mo
     return false;
 }
 
+// Lightweight TT peek (no window checks)
+inline bool peekTT(uint64_t key, TTEntry& out) {
+    const TTEntry& e = tt[key & TT_MASK];
+    if (e.key != key) return false;
+    out = e;
+    return true;
+}
+
+// Singular Extensions (SE) tunables
+constexpr int SE_MIN_DEPTH = 5;            // minimal depth to try SE
+constexpr int SE_DEPTH_TOL = 3;            // TT depth must be >= depth - tol
+constexpr int SE_MARGIN_PER_DEPTH = 2;     // singular_beta = tt_score - depth * this
+constexpr int SE_DOUBLE_BIAS = 55;         // extra slack for +2
+constexpr int SE_TRIPLE_BIAS = 120;        // extra slack for +3 (quiet only)
+
+struct SEResult {
+    int ext = 0;             // +1/+2/+3 or -1 for negative extension
+    bool multicut = false;   // if true, return mcScore immediately
+    int mcScore = 0;         // singular_beta (for multicut)
+};
+
+// Forward declaration with excluded move parameter
+int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
+              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
+              chess::Move previous_move, chess::Move excluded_move = chess::Move());
+
+// Run reduced excluded-move search to test singularity of tt_move
+SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int ply_from_root,
+                                ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
+                                chess::Move tt_move, uint64_t hash,
+                                bool is_pv_node, bool is_quiet_move) {
+    SEResult out;
+    if (depth < SE_MIN_DEPTH || tt_move == chess::Move()) return out;
+
+    TTEntry te;
+    if (!peekTT(hash, te)) return out;
+    if (te.best_move != tt_move) return out;
+    if (te.flag == TT_UPPER) return out;
+    if (te.depth < depth - SE_DEPTH_TOL) return out;
+
+    int tt_score = te.score;
+    if (tt_score >= MATE_SCORE - 100) tt_score -= ply_from_root;
+    else if (tt_score <= -MATE_SCORE + 100) tt_score += ply_from_root;
+    if (std::abs(tt_score) >= MATE_SCORE - 100) return out;
+
+    int singular_beta = std::max(-MATE_SCORE + 1, tt_score - depth * SE_MARGIN_PER_DEPTH);
+    int seDepth = (depth - 1) / 2;
+    if (seDepth <= 0) return out;
+
+    // Excluded search: skip tt_move, null-move disabled, prunings toned down in alphaBeta via flag
+    int val = alphaBeta(board, seDepth, singular_beta - 1, singular_beta,
+                        ply_from_root, thread, tm, stats, false, chess::Move(), tt_move);
+
+    if (val < singular_beta) {
+        int ext = 1;
+        if (!is_pv_node && val + SE_DOUBLE_BIAS < singular_beta) ext += 1;
+        if (!is_pv_node && is_quiet_move && val + SE_TRIPLE_BIAS < singular_beta) ext += 1;
+        out.ext = ext;
+        return out;
+    }
+
+    if (singular_beta >= beta) {
+        out.multicut = true;
+        out.mcScore = singular_beta;
+        return out;
+    }
+
+    // Negative extension heuristics similar to common practice
+    if (tt_score >= beta) {
+        out.ext = -1;
+    }
+
+    return out;
+}
+
 std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
     std::vector<chess::Move> pv;
     
@@ -893,7 +969,7 @@ void pickNextMove(std::vector<ScoredMove>& moves, size_t current) {
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
-              chess::Move previous_move);
+              chess::Move previous_move, chess::Move excluded_move);
 
 int quiescence(chess::Board& board, int alpha, int beta, ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
@@ -989,7 +1065,7 @@ void initLMR() {
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
-              chess::Move previous_move) {
+              chess::Move previous_move, chess::Move excluded_move) {
     stats.nodes++;
     
     if (tm && tm->should_stop()) return alpha;
@@ -1002,13 +1078,24 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     uint64_t hash = getZobristHash(board);
     int tt_score = 0;
     chess::Move tt_move;
+
+    bool in_singular_search = (excluded_move != chess::Move());
     
-    if (probeTT(hash, depth, alpha, beta, tt_score, tt_move, ply_from_root)) {
-        return tt_score;
+    if (!in_singular_search) {
+        if (probeTT(hash, depth, alpha, beta, tt_score, tt_move, ply_from_root)) {
+            return tt_score;
+        }
+    } else {
+        tt_move = chess::Move();
     }
     
     bool in_check = board.inCheck();
     bool is_pv_node = (beta - alpha) > 1;
+    
+    // INTERNAL ITERATIVE REDUCTION (IIR) - skip inside singular searches
+    if (!in_singular_search && depth >= 4 && tt_move == chess::Move() && !in_check) {
+        depth--;
+    }
     
     int static_eval = 0;
     if (!in_check) {
@@ -1091,16 +1178,21 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     for (size_t i = 0; i < scored_moves.size(); ++i) {
         pickNextMove(scored_moves, i);
         const auto& move = scored_moves[i].move;
+
+        // Skip excluded move in singular search
+        if (move == excluded_move) continue;
         
         bool is_quiet = isQuietMove(board, move);
         
-        // SEE pruning for non-PV noisy moves
+        // SEE pruning for non-PV noisy moves (disable inside singular search)
         bool is_noisy = !is_quiet;
-        if (!is_pv_node && !in_check && is_noisy && !chess::see::see_ge(board, move, 0)) {
+        if (!in_singular_search && !is_pv_node && !in_check && is_noisy && !chess::see::see_ge(board, move, 0)) {
             continue;
         }
         
-        if (!is_pv_node &&
+        // History pruning of bad quiets (disabled in singular search)
+        if (!in_singular_search &&
+            !is_pv_node &&
             !in_check &&
             depth <= 4 &&
             is_quiet &&
@@ -1115,7 +1207,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         }
         
-        if (!is_pv_node &&
+        // Late move pruning (disabled in singular search)
+        if (!in_singular_search &&
+            !is_pv_node &&
             !in_check &&
             depth <= 8 &&
             is_quiet &&
@@ -1124,6 +1218,20 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             break;
         }
         
+        // Potential singular extension probe for the TT move (pre-move)
+        int se_ext = 0;
+        if (!in_singular_search && move == tt_move && !in_check) {
+            auto se = probeSingularExtension(board, depth, beta, ply_from_root,
+                                             thread, tm, stats, tt_move, hash,
+                                             is_pv_node, is_quiet);
+            if (se.multicut) {
+                return se.mcScore;
+            }
+            se_ext = se.ext;
+            se_ext = std::min(se_ext, 3);
+            se_ext = std::max(se_ext, -1);
+        }
+
         move_count++;
         
         thread.accumulatorStack.push();
@@ -1132,7 +1240,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         
         bool gives_check = board.inCheck();
         
-        if (!is_pv_node &&
+        // Futility pruning (disabled in singular search)
+        if (!in_singular_search &&
+            !is_pv_node &&
             !in_check &&
             !gives_check &&
             depth <= 7 &&
@@ -1150,13 +1260,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
         
         int eval;
-        int new_depth = depth + extension - 1;
+        int local_extension = extension + se_ext;
+        int new_depth = depth + local_extension - 1;
         
         bool can_reduce = !in_check &&
                          is_quiet &&
                          move_count > 1 &&
                          depth >= 3 &&
                          !gives_check;
+        if (in_singular_search) can_reduce = false; // no LMR in excluded search
         
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
@@ -1213,7 +1325,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
             
-            storeTT(hash, depth, beta, best_move, TT_LOWER, ply_from_root);
+            if (!in_singular_search) {
+                storeTT(hash, depth, beta, best_move, TT_LOWER, ply_from_root);
+            }
             return beta;
         }
         
@@ -1238,8 +1352,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
     
-    TTFlag flag = (best_score > original_alpha) ? TT_EXACT : TT_UPPER;
-    storeTT(hash, depth, best_score, best_move, flag, ply_from_root);
+    if (!in_singular_search) {
+        TTFlag flag = (best_score > original_alpha) ? TT_EXACT : TT_UPPER;
+        storeTT(hash, depth, best_score, best_move, flag, ply_from_root);
+    }
     
     return best_score;
 }
@@ -1433,7 +1549,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management + SEE Pruning & Ordering" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering + Singular Extensions" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1444,7 +1560,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v17.0-SEE" << std::endl;
+            std::cout << "id name MyNNUEEngine v18.1-SE" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
