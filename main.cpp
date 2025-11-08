@@ -1010,6 +1010,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool in_check = board.inCheck();
     bool is_pv_node = (beta - alpha) > 1;
     
+    // **INTERNAL ITERATIVE REDUCTION (IIR)**
+    // Reduce depth when no TT move available at sufficient depth
+    if (depth >= 4 && tt_move == chess::Move() && !in_check) {
+        depth--;
+    }
+    
     int static_eval = 0;
     if (!in_check) {
         static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
@@ -1433,7 +1439,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + Improved Time Management + SEE Pruning & Ordering" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering" << std::endl;
     
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1444,7 +1450,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v17.0-SEE" << std::endl;
+            std::cout << "id name MyNNUEEngine v18.0-IIR" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
