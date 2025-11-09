@@ -1165,9 +1165,26 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         bool is_quiet = isQuietMove(board, move);
         bool is_noisy = !is_quiet;
 
+        // SEE Pruning for noisy moves
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && 
             !chess::see::see_ge(board, move, 0)) {
             continue;
+        }
+        
+        // SEE Pruning for quiet moves - NEW
+        if (!in_singular_search &&
+            !is_pv_node &&
+            !in_check &&
+            depth <= 8 &&
+            is_quiet &&
+            move != tt_move &&
+            !g_killerMoves.is_killer(ply_from_root, move) &&
+            move_count >= 2) {
+            
+            // Prune quiet moves that move to squares where the piece can be captured
+            if (!chess::see::see_ge(board, move, -50 * depth)) {
+                continue;
+            }
         }
         
         if (!in_singular_search &&
@@ -1485,7 +1502,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering + Singular Extensions + ProbCut (TT-gated)" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering (All Moves) + Singular Extensions + ProbCut (TT-gated)" << std::endl;
 
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1496,7 +1513,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v19.1-SE+PCt" << std::endl;
+            std::cout << "id name MyNNUEEngine v19.2-SEEq" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
