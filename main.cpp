@@ -300,6 +300,9 @@ inline int probcut_capture_min(int depth) {
     return depth >= 12 ? 700 : 400;
 }
 
+// PVS + SEE tunables (conservative)
+constexpr int PVS_SEE_QUIET_MARGIN = -100;  // Only prune very bad quiets in PV nodes after first move
+
 struct SearchStats {
     uint64_t nodes;
 
@@ -1165,8 +1168,17 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         bool is_quiet = isQuietMove(board, move);
         bool is_noisy = !is_quiet;
 
+        // SEE pruning for non-PV nodes - same as before
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && 
             !chess::see::see_ge(board, move, 0)) {
+            continue;
+        }
+        
+        // Conservative PV SEE pruning: only prune clearly losing captures in PV nodes after the first move
+        // and only at low depth
+        if (!in_singular_search && is_pv_node && move_count > 0 && !in_check && is_noisy && 
+            depth <= 3 && move != tt_move &&
+            !chess::see::see_ge(board, move, PVS_SEE_QUIET_MARGIN)) {
             continue;
         }
         
@@ -1256,12 +1268,16 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                 ply_from_root + 1, thread, tm, stats, true, move);
             }
         } else {
-            if (move_count == 1) {
+            // Here's the proper PVS implementation for alphaBeta
+            if (move_count == 1 || !is_pv_node) {
+                // First move or non-PV node: full window
                 eval = -alphaBeta(board, new_depth, -beta, -alpha, 
                                 ply_from_root + 1, thread, tm, stats, true, move);
             } else {
+                // PV node, non-first move: null window search first
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 
                                 ply_from_root + 1, thread, tm, stats, true, move);
+                // Re-search with full window if it beats alpha
                 if (eval > alpha && eval < beta) {
                     eval = -alphaBeta(board, new_depth, -beta, -alpha, 
                                     ply_from_root + 1, thread, tm, stats, true, move);
@@ -1369,6 +1385,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             scored_moves = scoreMoves(moves, board, ctx);
             score = -MATE_SCORE;
             
+            // ROOT PVS: first move gets full window, others get null window then re-search
             for (size_t i = 0; i < scored_moves.size(); ++i) {
                 pickNextMove(scored_moves, i);
                 const auto& move = scored_moves[i].move;
@@ -1383,8 +1400,23 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 board.makeMove(move);
                 
                 bool is_draw_move = isDrawByRepetition(board) || isDrawByFiftyMove(board);
-                int eval = is_draw_move ? -getDrawScore(1)
+                int eval;
+                
+                if (i == 0) {
+                    // First move: search with full aspiration window
+                    eval = is_draw_move ? -getDrawScore(1)
                                         : -alphaBeta(board, depth - 1, -beta, -alpha, 1, thread, &tm, stats, true, move);
+                } else {
+                    // Root PVS for non-first moves: null window, then re-search if needed
+                    eval = is_draw_move ? -getDrawScore(1)
+                                        : -alphaBeta(board, depth - 1, -alpha - 1, -alpha, 1, thread, &tm, stats, true, move);
+                    
+                    // If it beats alpha but is less than beta, re-search with full window
+                    if (eval > alpha && eval < beta) {
+                        eval = is_draw_move ? -getDrawScore(1)
+                                            : -alphaBeta(board, depth - 1, -beta, -alpha, 1, thread, &tm, stats, true, move);
+                    }
+                }
                 
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
@@ -1485,7 +1517,7 @@ void uci_loop() {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork("quantised-v5.bin");
     std::cout << "info string NNUE loaded" << std::endl;
-    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering + Singular Extensions + ProbCut (TT-gated)" << std::endl;
+    std::cout << "info string Features: Incremental NNUE + QS + Pick-Best Move Ordering + TT + Butterfly History (Color-Indexed) + Killer Moves + Counter Moves + LMR + NMP + PV + Check Extensions + RFP + LMP + Futility + Aspiration Windows + History Pruning + IIR + Improved Time Management + SEE Pruning & Ordering + Singular Extensions + ProbCut (TT-gated) + Root PVS + Conservative PV-SEE" << std::endl;
 
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
@@ -1496,7 +1528,7 @@ void uci_loop() {
         if (tokens.empty()) continue;
         
         if (tokens[0] == "uci") {
-            std::cout << "id name MyNNUEEngine v19.1-SE+PCt" << std::endl;
+            std::cout << "id name MyNNUEEngine v20.0-PVS" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
