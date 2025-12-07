@@ -21,7 +21,16 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                        (chess::see::see_ge(board, move, -50) ? 0 : -100);
         int victimValue = captured != chess::Piece::NONE ? pieceValue(captured.type()) : 100;
         int attackerValue = pieceValue(board.at(move.from()).type());
-        return 800000 + see_score * 1000 + victimValue * 10 - attackerValue;
+        
+        // Add capture history bonus
+        int cap_hist = 0;
+        if (captured != chess::Piece::NONE) {
+            int piece_type = static_cast<int>(board.at(move.from()).type());
+            int captured_type = static_cast<int>(captured.type());
+            cap_hist = g_captureHistory.get(piece_type, move.to().index(), captured_type) / 32;
+        }
+        
+        return 800000 + see_score * 1000 + victimValue * 10 - attackerValue + cap_hist;
     }
 
     if (move.typeOf() == chess::Move::ENPASSANT) {

@@ -712,6 +712,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 for (const auto& quiet : quiets_searched) {
                     g_butterflyHistory.update(side_to_move, quiet.from(), quiet.to(), -bonus / 2);
                 }
+            } else {
+                // Capture history update for captures that cause cutoff
+                chess::Piece captured = board.at(move.to());
+                if (captured != chess::Piece::NONE) {
+                    int bonus = 32 * depth * depth;
+                    int piece_type = static_cast<int>(board.at(move.from()).type());
+                    int captured_type = static_cast<int>(captured.type());
+                    g_captureHistory.update(piece_type, move.to().index(), captured_type, bonus);
+                }
             }
             if (!in_singular_search) {
                 storeTT(hash, depth, beta, best_move, TT_LOWER, ply_from_root, tt_pv);
