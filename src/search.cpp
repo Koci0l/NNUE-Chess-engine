@@ -365,9 +365,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         !in_check && 
         !is_pv_node &&
         depth >= 3 &&
-        hasNonPawnMaterial(board)) {
+        hasNonPawnMaterial(board) &&
+        static_eval >= beta) {  // Only try NMP if static eval looks promising
         
-        constexpr int R = 2;
+        // Depth-dependent reduction: R = 3 + depth/3
+        int R = 3 + depth / 3;
+        R = std::min(R, depth - 1);  // Don't reduce below depth 1
+        
         AccumulatorPair saved_acc = thread.accumulatorStack.current();
         board.makeNullMove();
         thread.accumulatorStack.push();
