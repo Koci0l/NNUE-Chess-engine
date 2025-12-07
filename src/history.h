@@ -50,7 +50,31 @@ struct CounterMoveHistory {
     bool is_counter(chess::Move previous_move, chess::Move move) const;
 };
 
+// Capture History: [piece_type][to_square][captured_type]
+struct CaptureHistory {
+    static constexpr int HISTORY_MAX = 16384;
+    static constexpr int HISTORY_GRAVITY = HISTORY_MAX;
+    int16_t table[6][64][6];  // [piece_type][to][captured_type]
+
+    CaptureHistory() { clear(); }
+    void clear() { std::memset(table, 0, sizeof(table)); }
+
+    int get(int piece, int to, int captured) const {
+        if (piece < 0 || piece >= 6 || to < 0 || to >= 64 || captured < 0 || captured >= 6) return 0;
+        return table[piece][to][captured];
+    }
+
+    void update(int piece, int to, int captured, int bonus) {
+        if (piece < 0 || piece >= 6 || to < 0 || to >= 64 || captured < 0 || captured >= 6) return;
+        int cur = table[piece][to][captured];
+        int delta = bonus - (cur * std::abs(bonus)) / HISTORY_GRAVITY;
+        int next = std::max(-HISTORY_MAX, std::min(HISTORY_MAX, cur + delta));
+        table[piece][to][captured] = static_cast<int16_t>(next);
+    }
+};
+
 // Global instances
 extern ButterflyHistory g_butterflyHistory;
 extern KillerMoves g_killerMoves;
 extern CounterMoveHistory g_counterMoves;
+extern CaptureHistory g_captureHistory;

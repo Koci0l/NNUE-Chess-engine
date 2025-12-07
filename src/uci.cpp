@@ -39,7 +39,7 @@ void uci_loop() {
     // Initialize subsystems
     initZobrist();
     initLMR();
-    initTT(64); // Default 64MB hash
+    initTT(256); // Default 256MB hash
 
     std::cout << "info string Loading NNUE..." << std::endl;
     // Ensure this file exists in the directory where you run the engine!
@@ -60,8 +60,9 @@ void uci_loop() {
         if (command == "uci") {
             std::cout << "id name MyNNUEEngine v20.0-ProbCut" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
-            std::cout << "option name Hash type spin default 64 min 1 max 1024" << std::endl;
+            std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
+            std::cout.flush();
 
         } else if (command == "setoption") {
             if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "Hash" && tokens[3] == "value") {
@@ -71,6 +72,7 @@ void uci_loop() {
 
         } else if (command == "isready") {
             std::cout << "readyok" << std::endl;
+            std::cout.flush();
 
         } else if (command == "ucinewgame") {
             board.setFen(chess::constants::STARTPOS);
@@ -79,6 +81,7 @@ void uci_loop() {
             g_butterflyHistory.clear();
             g_killerMoves.clear();
             g_counterMoves.clear();
+            g_captureHistory.clear();
 
         } else if (command == "position") {
             // position [startpos | fen <fenstring>] [moves <move1> ... <moveN>]
@@ -142,6 +145,7 @@ void uci_loop() {
 
             chess::Move best = search(board, depth, thread, tm);
             std::cout << "bestmove " << chess::uci::moveToUci(best) << std::endl;
+            std::cout.flush();
 
         } else if (command == "quit") {
             break;

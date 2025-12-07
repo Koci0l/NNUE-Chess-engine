@@ -3,6 +3,7 @@
 ButterflyHistory g_butterflyHistory;
 KillerMoves g_killerMoves;
 CounterMoveHistory g_counterMoves;
+CaptureHistory g_captureHistory;
 
 void ButterflyHistory::age() {
     for (int c = 0; c < 2; ++c)

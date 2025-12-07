@@ -2,7 +2,7 @@ CXX = g++
 CXXFLAGS = -std=c++17 -O3 -march=native -DNDEBUG -pthread
 
 # Define target executable name
-TARGET = engine-IIR
+TARGET = engine-DD
 
 # Find all .cpp files in src/ directory
 SOURCES = $(wildcard src/*.cpp)
