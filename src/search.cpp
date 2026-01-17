@@ -51,7 +51,7 @@ constexpr int SPROBCUT_BETA_MARGIN = 350;
 constexpr int SPROBCUT_TT_DEPTH_SUBTRACTOR = 4;
 
 // No-alloc move ordering buffers
-constexpr int MAX_MOVES_NOALLOC = 256;     // legal moves <= 218, keep headroom
+constexpr int MAX_MOVES_NOALLOC = 256;
 constexpr int MAX_QUIETS_TRACKED = 64;
 
 // ============================================================================
@@ -75,7 +75,7 @@ int getDrawScore(int /*ply_from_root*/) {
 }
 
 // ============================================================================
-// No-allocation move scoring + selection (replaces std::vector<ScoredMove> in search)
+// No-allocation move scoring + selection
 // ============================================================================
 
 static inline void pickNextMoveNoAlloc(ScoredMove* moves, int count, int idx) {
@@ -96,7 +96,6 @@ static inline int scoreMoveNoAlloc(const chess::Board& board,
                                    chess::Move counter_move,
                                    chess::Color side_to_move,
                                    int ply_from_root) {
-    // Big constants to force ordering tiers.
     constexpr int TT_BONUS      = 3'000'000;
     constexpr int CAPTURE_BONUS = 2'000'000;
     constexpr int KILLER_BONUS  = 1'500'000;
@@ -111,7 +110,6 @@ static inline int scoreMoveNoAlloc(const chess::Board& board,
 
     chess::Piece captured = chess::Piece::NONE;
     if (is_ep) {
-        // captured pawn is not on move.to()
         chess::Square capSq(move.to().file(), move.from().rank());
         captured = board.at(capSq);
     } else {
@@ -119,7 +117,6 @@ static inline int scoreMoveNoAlloc(const chess::Board& board,
     }
     const bool is_capture = (captured != chess::Piece::NONE);
 
-    // Noisy
     if (is_capture || is_promo) {
         int victim = 0;
         if (is_capture) victim = pieceValue(captured.type());
@@ -127,22 +124,18 @@ static inline int scoreMoveNoAlloc(const chess::Board& board,
         chess::Piece attackerP = board.at(move.from());
         int attacker = pieceValue(attackerP.type());
 
-        // MVV-LVA-ish, stable and cheap.
         int score = CAPTURE_BONUS + victim * 10 - attacker;
 
         if (is_promo) {
-            // Promotions should be searched early even if non-capture.
             score += PROMO_BONUS + pieceValue(move.promotionType());
         }
 
         return score;
     }
 
-    // Quiet tiers
     if (g_killerMoves.is_killer(ply_from_root, move)) return KILLER_BONUS;
     if (move == counter_move) return COUNTER_BONUS;
 
-    // History (can be negative)
     return g_butterflyHistory.get(side_to_move, move.from(), move.to());
 }
 
@@ -322,7 +315,6 @@ int quiescence(chess::Board& board, int alpha, int beta,
     chess::Movelist all_moves;
     chess::movegen::legalmoves(all_moves, board);
 
-    // No-allocation scored buffer
     ScoredMove scored_moves[MAX_MOVES_NOALLOC];
     int scored_count = 0;
 
@@ -353,7 +345,6 @@ int quiescence(chess::Board& board, int alpha, int beta,
                            move.typeOf() == chess::Move::PROMOTION ||
                            move.typeOf() == chess::Move::ENPASSANT;
 
-        // SEE pruning for non-check positions
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0)) {
             continue;
         }
@@ -383,10 +374,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
               chess::Move previous_move, SearchStack* ss, chess::Move excluded_move) {
     stats.nodes++;
 
-    // Time check
     if (tm && tm->should_stop()) return alpha;
 
-    // Draw detection
     if (ply_from_root > 0) {
         if (isDrawByRepetition(board)) return getDrawScore(ply_from_root);
         if (isDrawByFiftyMove(board)) return getDrawScore(ply_from_root);
@@ -401,7 +390,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     bool in_singular_search = (excluded_move != chess::Move());
 
-    // TT Probe
     if (!in_singular_search) {
         bool tt_hit = probeTT(hash, depth, alpha, beta, tt_score, tt_move, ply_from_root, tt_pv);
         if (tt_hit) {
@@ -419,7 +407,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool in_check = board.inCheck();
     bool is_pv_node = (beta - alpha) > 1;
 
-    // Internal Iterative Reduction (IIR)
     if (!in_singular_search && depth >= 4 && tt_move == chess::Move() && !in_check) {
         depth--;
     }
@@ -431,7 +418,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
         ss[ply_from_root].static_eval = static_eval;
 
-        // Calculate improving
         if (ply_from_root >= 2) {
             improving = ss[ply_from_root].static_eval > ss[ply_from_root - 2].static_eval;
         }
@@ -465,11 +451,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         !is_pv_node &&
         depth >= 3 &&
         hasNonPawnMaterial(board) &&
-        static_eval >= beta) {  // Only try NMP if static eval looks promising
+        static_eval >= beta) {
 
-        // Depth-dependent reduction: R = 3 + depth/3
         int R = 3 + depth / 3;
-        R = std::min(R, depth - 1);  // Don't reduce below depth 1
+        R = std::min(R, depth - 1);
 
         AccumulatorPair saved_acc = thread.accumulatorStack.current();
         board.makeNullMove();
@@ -503,7 +488,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         std::abs(beta) < MATE_SCORE - 200 &&
         hasNonPawnMaterial(board)) {
 
-        // TT gating - only run if no deep TT hit or TT suggests cutoff likely
         bool tt_gate = true;
         if (tt_move != chess::Move() && tt_depth >= depth - 3 && tt_score < probcut_beta) {
             tt_gate = false;
@@ -512,7 +496,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (tt_gate) {
             int probcut_depth = depth - PROBCUT_DEPTH_SUBTRACTOR;
 
-            // Generate only captures and promotions
             chess::Movelist all_moves;
             chess::movegen::legalmoves(all_moves, board);
 
@@ -528,7 +511,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
                 if (!is_capture && !is_promotion) continue;
 
-                // SEE pruning
                 if (!chess::see::see_ge(board, mv, PROBCUT_SEE_THRESHOLD)) continue;
 
                 int victim = 0;
@@ -544,13 +526,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 probcut_moves.push_back({mv, move_score});
             }
 
-            // Sort by score (best captures first)
             std::sort(probcut_moves.begin(), probcut_moves.end(),
                       [](const ProbCutMove& a, const ProbCutMove& b) {
                           return a.score > b.score;
                       });
 
-            // Try best captures
             for (size_t i = 0; i < std::min(probcut_moves.size(), size_t(PROBCUT_MAX_MOVES)); ++i) {
                 const auto& move = probcut_moves[i].mv;
 
@@ -558,11 +538,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 updateAccumulatorForMove(thread.accumulatorStack, board, move);
                 board.makeMove(move);
 
-                // First try qsearch to quickly see if this is promising
                 int probcut_value = -quiescence(board, -probcut_beta, -probcut_beta + 1,
                                                thread, ply_from_root + 1, stats);
 
-                // If qsearch passes, do reduced depth search
                 if (probcut_value >= probcut_beta) {
                     probcut_value = -alphaBeta(board, probcut_depth - 1, -probcut_beta, -probcut_beta + 1,
                                                ply_from_root + 1, thread, tm, stats, false, move, ss);
@@ -582,7 +560,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     }
 
     // ========================================================================
-    // Small ProbCut - exploits deep TT entries
+    // Small ProbCut
     // ========================================================================
     int small_probcut_beta = beta + SPROBCUT_BETA_MARGIN;
 
@@ -619,7 +597,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
-    // No-allocation scored buffer (replaces std::vector<ScoredMove>)
     ScoredMove scored_moves[MAX_MOVES_NOALLOC];
     int scored_count = 0;
     scoreMovesNoAlloc(moves, board, tt_move, counter_move, side_to_move, ply_from_root,
@@ -641,7 +618,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         pickNextMoveNoAlloc(scored_moves, scored_count, i);
         const auto& move = scored_moves[i].move;
 
-        // Skip excluded move (for singular search)
         if (move == excluded_move) continue;
 
         bool is_quiet = isQuietMove(board, move);
@@ -719,7 +695,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         move_count++;
 
-        // Make move
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
         board.makeMove(move);
@@ -765,32 +740,33 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
 
-            // Reduce less for TT move
             if (move == tt_move) reduction = 0;
-            // Reduce less for early moves
             else if (move_count <= 3) reduction = std::max(0, reduction - 1);
+
+            // Reduce more when not improving
+            if (!improving) reduction += 1;
+
+            // History-based reduction adjustment
+            int hist = g_butterflyHistory.get(side_to_move, move.from(), move.to());
+            if (hist < -2000) reduction += 1;
+            else if (hist > 4000) reduction = std::max(0, reduction - 1);
 
             reduction = std::max(1, std::min(reduction, new_depth - 1));
 
-            // Reduced depth search (null window)
             eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                               ply_from_root + 1, thread, tm, stats, true, move, ss);
 
-            // Re-search at full depth if reduced search beats alpha
             if (eval > alpha) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
             }
         } else {
-            // PVS: First move gets full window, rest get null window first
             if (move_count == 1) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
             } else {
-                // Null window search
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
-                // Re-search with full window if it beats alpha
                 if (eval > alpha && eval < beta) {
                     eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                       ply_from_root + 1, thread, tm, stats, true, move, ss);
@@ -798,33 +774,27 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         }
 
-        // Unmake move
         board.unmakeMove(move);
         thread.accumulatorStack.pop();
 
-        // Update best
         if (eval > best_score) {
             best_score = eval;
             best_move = move;
         }
 
-        // Beta cutoff
         if (eval >= beta) {
             if (is_quiet) {
                 g_killerMoves.store(ply_from_root, move);
                 g_counterMoves.update(previous_move, move);
 
-                // History bonus for the move that caused cutoff
                 int bonus = 32 * depth * depth;
                 g_butterflyHistory.update(side_to_move, move.from(), move.to(), bonus);
 
-                // History malus for quiet moves that didn't cause cutoff
                 for (int q = 0; q < quiets_count; ++q) {
                     const auto& quiet = quiets_searched[q];
                     g_butterflyHistory.update(side_to_move, quiet.from(), quiet.to(), -bonus / 2);
                 }
             } else {
-                // Capture history update for captures that cause cutoff
                 chess::Piece captured = board.at(move.to());
                 if (captured != chess::Piece::NONE) {
                     int bonus = 32 * depth * depth;
@@ -839,18 +809,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             return beta;
         }
 
-        // Update alpha
         if (eval > alpha) alpha = eval;
 
-        // Track searched quiets (no allocation)
         if (is_quiet && quiets_count < MAX_QUIETS_TRACKED) {
             quiets_searched[quiets_count++] = move;
         }
     }
 
-    // ========================================================================
-    // History bonus for best move if it raised alpha
-    // ========================================================================
     if (best_score > original_alpha && isQuietMove(board, best_move)) {
         int bonus = 8 * depth * depth;
         g_butterflyHistory.update(side_to_move, best_move.from(), best_move.to(), bonus);
@@ -862,9 +827,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // ========================================================================
-    // Store TT Entry
-    // ========================================================================
     if (!in_singular_search) {
         TTFlag flag = (best_score > original_alpha) ? TT_EXACT : TT_UPPER;
         storeTT(hash, depth, best_score, best_move, flag, ply_from_root, tt_pv);
@@ -883,13 +845,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
     if (moves.empty()) return chess::Move();
 
-    // Single legal move - return immediately
     if (moves.size() == 1) {
         std::cout << "info string only move" << std::endl;
         return moves[0];
     }
 
-    // Age history if it's getting too large
     if (g_butterflyHistory.should_age()) {
         g_butterflyHistory.age();
         std::cout << "info string butterfly history aged" << std::endl;
@@ -901,19 +861,14 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
     SearchStack ss[MAX_PLY + 10];
 
-    // Root no-alloc scored buffer
     ScoredMove root_scored[MAX_MOVES_NOALLOC];
     int root_scored_count = 0;
     scoreMovesNoAlloc(moves, board, chess::Move(), chess::Move(), board.sideToMove(), 0,
                       root_scored, root_scored_count);
 
-    // ========================================================================
-    // Iterative Deepening Loop
-    // ========================================================================
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
 
-        // Check if we should continue to next depth
         if (depth > 1 && !tm.should_continue_depth(depth, last_depth_ms)) {
             std::cout << "info string stopping at depth " << (depth - 1)
                       << " (time: " << tm.elapsed_ms() << "ms)" << std::endl;
@@ -928,14 +883,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         chess::Move depth_best_move = (root_scored_count > 0 ? root_scored[0].move : moves[0]);
         int score;
 
-        // ====================================================================
-        // Aspiration Windows
-        // ====================================================================
         bool search_again = true;
         while (search_again) {
             search_again = false;
 
-            // Set aspiration window
             if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
                 alpha = std::max(-MATE_SCORE, best_score - delta);
                 beta  = std::min( MATE_SCORE, best_score + delta);
@@ -946,18 +897,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
             stats.reset();
 
-            // Rescore root moves with current tt move (best_move)
             scoreMovesNoAlloc(moves, board, best_move, chess::Move(), board.sideToMove(), 0,
                               root_scored, root_scored_count);
 
             score = -MATE_SCORE;
 
-            // Search each root move
             for (int i = 0; i < root_scored_count; ++i) {
                 pickNextMoveNoAlloc(root_scored, root_scored_count, i);
                 const auto& move = root_scored[i].move;
 
-                // Time check
                 if (tm.should_stop()) {
                     std::cout << "info string time limit reached at depth " << depth << std::endl;
                     goto search_done;
@@ -967,7 +915,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 updateAccumulatorForMove(thread.accumulatorStack, board, move);
                 board.makeMove(move);
 
-                // Check for immediate draw
                 bool is_draw_move = isDrawByRepetition(board) || isDrawByFiftyMove(board);
                 int eval = is_draw_move ? -getDrawScore(1)
                                         : -alphaBeta(board, depth - 1, -beta, -alpha, 1,
@@ -984,7 +931,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (eval >= beta) break;
             }
 
-            // Check for aspiration window fail
             int aspiration_alpha = (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) ?
                                    std::max(-MATE_SCORE, best_score - delta) : -MATE_SCORE - 1;
             int aspiration_beta  = (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) ?
@@ -1002,14 +948,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 search_again = true;
             }
 
-            // Fall back to full window if delta gets too large
             if (delta > 1000) {
                 std::cout << "info string depth " << depth
                           << " window too wide, using full window" << std::endl;
                 delta = MATE_SCORE;
             }
 
-            // Time check during re-search
             if (search_again && tm.should_stop()) {
                 std::cout << "info string time limit reached during aspiration re-search at depth "
                           << depth << std::endl;
@@ -1017,11 +961,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             }
         }
 
-        // Update best move and score
         best_score = score;
         best_move = depth_best_move;
 
-        // Calculate timing
         auto depth_end = std::chrono::high_resolution_clock::now();
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             depth_end - depth_start).count();
@@ -1029,7 +971,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         int64_t elapsed = tm.elapsed_ms();
         uint64_t nps = (elapsed > 0) ? (stats.nodes * 1000) / elapsed : 0;
 
-        // Extract PV
         auto pv_line = extractPV(board, depth);
         std::string pv_str;
         for (const auto& m : pv_line)
@@ -1037,7 +978,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         if (pv_str.empty())
             pv_str = chess::uci::moveToUci(best_move);
 
-        // Format score
         std::string score_str;
         if (best_score >= MATE_SCORE - 100) {
             int mate_in = (MATE_SCORE - best_score + 1) / 2;
@@ -1049,7 +989,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             score_str = "cp " + std::to_string(best_score);
         }
 
-        // Output info
         std::cout << "info score " << score_str
                   << " depth " << depth
                   << " nodes " << stats.nodes
