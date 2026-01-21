@@ -44,37 +44,27 @@ struct AccumulatorPair {
 // Stack-based accumulator management
 class AccumulatorStack {
 private:
-    std::vector<AccumulatorPair> stack;
-    
+    static constexpr size_t MAX_DEPTH = 128;
+    alignas(64) AccumulatorPair stack[MAX_DEPTH];
+    size_t idx = 0;
+
 public:
-    AccumulatorStack() {
-        stack.reserve(128); // Reserve space for deep searches
-    }
-    
-    AccumulatorPair& current() { 
-        return stack.back(); 
-    }
-    
-    const AccumulatorPair& current() const { 
-        return stack.back(); 
-    }
-    
-    // Just copy the current accumulator (incremental updates will be applied separately)
+    AccumulatorPair& current() { return stack[idx]; }
+    const AccumulatorPair& current() const { return stack[idx]; }
+
     void push() { 
-        stack.push_back(stack.back()); // Copy current state
+        stack[idx + 1] = stack[idx];  // Same behavior as before
+        ++idx;
     }
-    
+
     void pop() { 
-        if (stack.size() > 1) {
-            stack.pop_back(); 
-        }
+        if (idx > 0) --idx; 
     }
-    
+
     void resetAccumulators(const chess::Board& board) {
-        stack.clear();
-        stack.emplace_back();
-        stack.back().resetAccumulators(board);
+        idx = 0;
+        stack[0].resetAccumulators(board);
     }
-    
-    size_t size() const { return stack.size(); }
+
+    size_t size() const { return idx + 1; }
 };
