@@ -60,7 +60,7 @@ constexpr int RAZOR_MARGIN_D3 = 700;
 // ============================================================================
 
 inline int scaleNNUE(int raw_score) {
-    return raw_score / 2;
+    return raw_score;
 }
 
 bool isDrawByRepetition(const chess::Board& board) {
