@@ -2,7 +2,7 @@
 
 #include "config.h"
 #include <cstring>
-#include <vector>
+#include <array>
 
 namespace chess {
     class Board;
@@ -11,15 +11,18 @@ namespace chess {
     class Move;
 }
 
-#if defined(__x86_64__) || defined(__amd64__)
-    #define CACHE_LINE_ALIGNMENT alignas(64)
+#if defined(__AVX512F__)
+    #define ALIGNMENT alignas(64)
+#elif defined(__AVX2__) || defined(__AVX__)
+    #define ALIGNMENT alignas(32)
 #else
-    #define CACHE_LINE_ALIGNMENT alignas(16)
+    #define ALIGNMENT alignas(16)
 #endif
 
-class CACHE_LINE_ALIGNMENT Accumulator {
+class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
+    
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -41,11 +44,10 @@ struct AccumulatorPair {
     }
 };
 
-// Stack-based accumulator management
 class AccumulatorStack {
 private:
     static constexpr size_t MAX_DEPTH = 128;
-    alignas(64) AccumulatorPair stack[MAX_DEPTH];
+    ALIGNMENT AccumulatorPair stack[MAX_DEPTH];
     size_t idx = 0;
 
 public:
@@ -53,7 +55,7 @@ public:
     const AccumulatorPair& current() const { return stack[idx]; }
 
     void push() { 
-        stack[idx + 1] = stack[idx];  // Same behavior as before
+        stack[idx + 1] = stack[idx];
         ++idx;
     }
 

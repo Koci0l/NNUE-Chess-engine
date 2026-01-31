@@ -16,8 +16,8 @@ constexpr usize INPUT_SIZE     = 768;
 constexpr usize HL_SIZE        = 1024;
 constexpr i16   QA             = 255;
 constexpr i16   QB             = 64;
-constexpr int   EVAL_SCALE     = 400;
-constexpr usize OUTPUT_BUCKETS = 1;
+constexpr int   EVAL_SCALE     = 400;   
+constexpr usize OUTPUT_BUCKETS = 8;
 
 namespace Search {
     constexpr int TB_MATE_IN_MAX_PLY = 32000;

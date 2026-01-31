@@ -42,8 +42,7 @@ void uci_loop() {
     initTT(256); // Default 256MB hash
 
     std::cout << "info string Loading NNUE..." << std::endl;
-    // Ensure this file exists in the directory where you run the engine!
-    g_nnue.loadNetwork("quantised-v5.bin"); 
+    g_nnue.loadNetwork("quantised-v6.bin"); 
     std::cout << "info string NNUE loaded" << std::endl;
 
     // Set initial state
@@ -84,13 +83,11 @@ void uci_loop() {
             g_captureHistory.clear();
 
         } else if (command == "position") {
-            // position [startpos | fen <fenstring>] [moves <move1> ... <moveN>]
             size_t moves_idx = 0;
             if (tokens.size() > 1 && tokens[1] == "startpos") {
                 board.setFen(chess::constants::STARTPOS);
                 moves_idx = 2;
             } else if (tokens.size() > 1 && tokens[1] == "fen") {
-                // Reconstruct FEN string from tokens
                 std::string fen;
                 size_t i = 2;
                 while (i < tokens.size() && tokens[i] != "moves") {
@@ -101,26 +98,21 @@ void uci_loop() {
                 moves_idx = i;
             }
 
-            // Apply moves if present
             if (moves_idx < tokens.size() && tokens[moves_idx] == "moves") {
                 for (size_t i = moves_idx + 1; i < tokens.size(); ++i) {
-                    // FIX: Changed parseMove to uciToMove
                     chess::Move move = chess::uci::uciToMove(board, tokens[i]);
                     if (move != chess::Move()) {
                         board.makeMove(move);
                     }
                 }
             }
-            // IMPORTANT: Sync NNUE accumulators with the new board state
             thread.accumulatorStack.resetAccumulators(board);
 
         } else if (command == "go") {
-            // go wtime <x> btime <y> ... or go <depth> (non-standard but supported)
             int wtime = 0, btime = 0, winc = 0, binc = 0, movestogo = 30;
             int depth = 99;
             int movetime = -1;
 
-            // Simple parser
             for (size_t i = 1; i < tokens.size(); ++i) {
                 if (tokens[i] == "wtime" && i + 1 < tokens.size()) wtime = std::stoi(tokens[i + 1]);
                 else if (tokens[i] == "btime" && i + 1 < tokens.size()) btime = std::stoi(tokens[i + 1]);
@@ -131,7 +123,6 @@ void uci_loop() {
                 else if (tokens[i] == "movestogo" && i + 1 < tokens.size()) movestogo = std::stoi(tokens[i + 1]);
             }
 
-            // Support "go 15" shorthand for "go depth 15"
             if (tokens.size() == 2 && is_integer(tokens[1])) {
                 depth = std::stoi(tokens[1]);
             }
@@ -140,7 +131,6 @@ void uci_loop() {
             int time_left = (board.sideToMove() == chess::Color::WHITE) ? wtime : btime;
             int inc = (board.sideToMove() == chess::Color::WHITE) ? winc : binc;
             
-            // If movetime is set, it overrides normal time management
             tm.init(time_left, inc, movestogo, movetime);
 
             chess::Move best = search(board, depth, thread, tm);
@@ -149,10 +139,27 @@ void uci_loop() {
 
         } else if (command == "quit") {
             break;
+        
         } else if (command == "eval") {
-            // Debug command to check static evaluation
             int val = g_nnue.evaluate(board, thread);
             std::cout << "NNUE static eval: " << val << std::endl;
+
+        } else if (command == "debug") {
+            // Full NNUE debug output
+            thread.accumulatorStack.resetAccumulators(board);
+            g_nnue.debugNetwork(board, thread.accumulatorStack.current());
+
+        } else if (command == "buckets") {
+            // Show all bucket evaluations
+            thread.accumulatorStack.resetAccumulators(board);
+            g_nnue.showBuckets(&board, thread.accumulatorStack.current());
+
+        } else if (command == "d" || command == "display") {
+            // Display current board
+            std::cout << board << std::endl;
+            std::cout << "FEN: " << board.getFen() << std::endl;
+            std::cout << "Side to move: " << (board.sideToMove() == chess::Color::WHITE ? "White" : "Black") << std::endl;
+            std::cout << "Pieces: " << board.occ().count() << std::endl;
         }
     }
 

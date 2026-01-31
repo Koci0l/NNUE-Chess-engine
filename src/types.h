@@ -1,19 +1,29 @@
 #pragma once
 
+#include "config.h"
+#include "accumulator.h"
 #include "chess.hpp"
-#include "nnue.h"
+
+// Forward declarations
+struct TimeManager;
+struct SearchStats;
+struct SearchStack;
+
+// ThreadInfo definition
+struct ThreadInfo {
+    AccumulatorStack accumulatorStack;
+    
+    void reset(const chess::Board& board) {
+        accumulatorStack.resetAccumulators(board);
+    }
+};
 
 // Constants
 constexpr int MATE_SCORE = 30000;
 constexpr int MAX_PLY = 100;
 constexpr int CONTEMPT = 0;
 
-// Forward declarations
-struct ThreadInfo;
-struct SearchStats;
-struct TimeManager;
-
-// Utility
+// Utility functions
 inline chess::Color oppColor(chess::Color c) {
     return c == chess::Color::WHITE ? chess::Color::BLACK : chess::Color::WHITE;
 }
