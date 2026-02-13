@@ -48,6 +48,14 @@ inline bool hasNonPawnMaterial(const chess::Board& board) {
            board.pieces(chess::PieceType::QUEEN, side).count() > 0;
 }
 
+struct ScoredMove {
+    chess::Move move;
+    int score = 0;
+
+    ScoredMove() = default;
+    ScoredMove(const chess::Move& m, int s) : move(m), score(s) {}
+};
+
 struct SearchStats {
     uint64_t nodes = 0;
     void reset() { nodes = 0; }
@@ -57,4 +65,5 @@ struct SearchStack {
     int static_eval = 0;
     chess::Move current_move;
     chess::Move excluded_move;
+    chess::Piece moved_piece = chess::Piece::NONE;
 };

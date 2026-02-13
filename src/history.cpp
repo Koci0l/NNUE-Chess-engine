@@ -4,6 +4,8 @@ ButterflyHistory g_butterflyHistory;
 KillerMoves g_killerMoves;
 CounterMoveHistory g_counterMoves;
 CaptureHistory g_captureHistory;
+ContinuationHistory g_contHist1ply;
+ContinuationHistory g_contHist2ply;
 
 void ButterflyHistory::age() {
     for (int c = 0; c < 2; ++c)
