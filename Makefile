@@ -1,14 +1,9 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=native -DNDEBUG -pthread
+CXXFLAGS = -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread
 
-# Define target executable name
-TARGET = engine-DD
+TARGET = Kociolek-2.0.exe
 
-# Find all .cpp files in src/ directory
 SOURCES = $(wildcard src/*.cpp)
-
-# Define object files (optional, or just compile directly)
-OBJECTS = $(SOURCES:.cpp=.o)
 
 all: $(TARGET)
 
