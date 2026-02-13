@@ -3,13 +3,7 @@
 #include "chess.hpp"
 #include "types.h"
 #include <vector>
-
-struct ScoredMove {
-    chess::Move move;
-    int score = 0;
-    ScoredMove() = default;
-    ScoredMove(chess::Move m, int s) : move(m), score(s) {}
-};
+#include "types.h" 
 
 struct MovePickerContext {
     chess::Move tt_move;
