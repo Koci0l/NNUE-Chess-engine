@@ -24,12 +24,15 @@ namespace {
         int f = static_cast<int>(sq.file());
         int r = static_cast<int>(sq.rank());
         int deltas[8][2] = {{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}};
+
         for (int i = 0; i < 8; ++i) {
-            int nf = f + deltas[i][0], nr = r + deltas[i][1];
+            int nf = f + deltas[i][0];
+            int nr = r + deltas[i][1];
             if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
                 attacks |= Bitboard::fromSquare(Square(nf + nr * 8));
             }
         }
+
         return attacks;
     }
 
@@ -37,15 +40,18 @@ namespace {
         Bitboard attacks(0ULL);
         int f = static_cast<int>(sq.file());
         int r = static_cast<int>(sq.rank());
+
         for (int df = -1; df <= 1; ++df) {
             for (int dr = -1; dr <= 1; ++dr) {
                 if (df == 0 && dr == 0) continue;
-                int nf = f + df, nr = r + dr;
+                int nf = f + df;
+                int nr = r + dr;
                 if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
                     attacks |= Bitboard::fromSquare(Square(nf + nr * 8));
                 }
             }
         }
+
         return attacks;
     }
 
@@ -53,17 +59,19 @@ namespace {
         Bitboard attacks(0ULL);
         int f = static_cast<int>(sq.file());
         int r = static_cast<int>(sq.rank());
-        
+
         int dirs[4][2] = {{1,1}, {-1,1}, {1,-1}, {-1,-1}};
         for (auto& dir : dirs) {
             for (int d = 1; d < 8; ++d) {
-                int nf = f + d * dir[0], nr = r + d * dir[1];
+                int nf = f + d * dir[0];
+                int nr = r + d * dir[1];
                 if (nf < 0 || nf >= 8 || nr < 0 || nr >= 8) break;
                 Square nsq(nf + nr * 8);
                 attacks |= Bitboard::fromSquare(nsq);
                 if (occ & Bitboard::fromSquare(nsq)) break;
             }
         }
+
         return attacks;
     }
 
@@ -92,6 +100,7 @@ namespace {
             attacks |= Bitboard::fromSquare(nsq);
             if (occ & Bitboard::fromSquare(nsq)) break;
         }
+
         return attacks;
     }
 
@@ -100,11 +109,13 @@ namespace {
         PieceType::ROOK, PieceType::QUEEN, PieceType::KING
     };
 
-    inline PieceType popLeastValuable(const Board& board, Bitboard& occ, 
-                                       Bitboard& attackers, Color color) {
+    inline PieceType popLeastValuable(const Board& board, Bitboard& occ,
+                                      Bitboard& attackers, Color color) {
+        attackers &= occ;
+
         for (auto pt : lvaOrder) {
-            auto piece_bb = board.pieces(pt, color);
-            auto candidates = attackers & piece_bb;
+            Bitboard piece_bb = board.pieces(pt, color);
+            Bitboard candidates = attackers & piece_bb & occ;
             if (candidates.count() > 0) {
                 Square from = candidates.lsb();
                 occ ^= Bitboard::fromSquare(from);
@@ -112,28 +123,32 @@ namespace {
                 return pt;
             }
         }
+
         return PieceType::NONE;
     }
 
     inline Bitboard attackersTo(const Board& board, Square sq, Bitboard occ) {
         Bitboard atk(0ULL);
+
         atk |= pawnAttacks(Color::WHITE, sq) & board.pieces(PieceType::PAWN, Color::BLACK);
         atk |= pawnAttacks(Color::BLACK, sq) & board.pieces(PieceType::PAWN, Color::WHITE);
-        atk |= knightAttacks(sq) & (board.pieces(PieceType::KNIGHT, Color::WHITE) | 
-                                     board.pieces(PieceType::KNIGHT, Color::BLACK));
-        atk |= kingAttacks(sq) & (board.pieces(PieceType::KING, Color::WHITE) | 
-                                   board.pieces(PieceType::KING, Color::BLACK));
 
-        Bitboard bishopsQueens = board.pieces(PieceType::BISHOP, Color::WHITE) | 
-                                  board.pieces(PieceType::QUEEN, Color::WHITE) |
-                                  board.pieces(PieceType::BISHOP, Color::BLACK) | 
-                                  board.pieces(PieceType::QUEEN, Color::BLACK);
+        atk |= knightAttacks(sq) & (board.pieces(PieceType::KNIGHT, Color::WHITE) |
+                                    board.pieces(PieceType::KNIGHT, Color::BLACK));
+
+        atk |= kingAttacks(sq) & (board.pieces(PieceType::KING, Color::WHITE) |
+                                  board.pieces(PieceType::KING, Color::BLACK));
+
+        Bitboard bishopsQueens = board.pieces(PieceType::BISHOP, Color::WHITE) |
+                                 board.pieces(PieceType::QUEEN, Color::WHITE) |
+                                 board.pieces(PieceType::BISHOP, Color::BLACK) |
+                                 board.pieces(PieceType::QUEEN, Color::BLACK);
         atk |= getBishopAttacks(sq, occ) & bishopsQueens;
 
-        Bitboard rooksQueens = board.pieces(PieceType::ROOK, Color::WHITE) | 
-                                board.pieces(PieceType::QUEEN, Color::WHITE) |
-                                board.pieces(PieceType::ROOK, Color::BLACK) | 
-                                board.pieces(PieceType::QUEEN, Color::BLACK);
+        Bitboard rooksQueens = board.pieces(PieceType::ROOK, Color::WHITE) |
+                               board.pieces(PieceType::QUEEN, Color::WHITE) |
+                               board.pieces(PieceType::ROOK, Color::BLACK) |
+                               board.pieces(PieceType::QUEEN, Color::BLACK);
         atk |= getRookAttacks(sq, occ) & rooksQueens;
 
         return atk;
@@ -152,7 +167,7 @@ int gain(const Board& board, const Move& move) {
     if (move.typeOf() == Move::CASTLING) return 0;
     if (move.typeOf() == Move::ENPASSANT) return value(PieceType::PAWN);
 
-    auto score = board.at(move.to()) != Piece::NONE ? value(board.at(move.to()).type()) : 0;
+    int score = board.at(move.to()) != Piece::NONE ? value(board.at(move.to()).type()) : 0;
     if (move.typeOf() == Move::PROMOTION) {
         score += value(move.promotionType()) - value(PieceType::PAWN);
     }
@@ -160,34 +175,43 @@ int gain(const Board& board, const Move& move) {
 }
 
 bool see_ge(const Board& board, const Move& move, int threshold) {
-    auto score = gain(board, move) - threshold;
+    if (move == Move()) return false;
+    if (board.at(move.from()) == Piece::NONE) return false;
+
+    int score = gain(board, move) - threshold;
     if (score < 0) return false;
 
-    PieceType next = (move.typeOf() == Move::PROMOTION) ? 
-                     move.promotionType() : board.at(move.from()).type();
+    PieceType next = (move.typeOf() == Move::PROMOTION)
+        ? move.promotionType()
+        : board.at(move.from()).type();
+
     score -= value(next);
     if (score >= 0) return true;
 
     Square square = move.to();
-
-    // Fix: Use board.occ() instead of manual loop to avoid type conversion error
     Bitboard occupancy = board.occ();
 
     occupancy ^= Bitboard::fromSquare(move.from());
-    occupancy ^= Bitboard::fromSquare(square);
 
-    Bitboard queens = board.pieces(PieceType::QUEEN, Color::WHITE) | 
+    if (move.typeOf() == Move::ENPASSANT) {
+        Square epCaptured(move.to().file(), move.from().rank());
+        occupancy ^= Bitboard::fromSquare(epCaptured);
+    } else {
+        occupancy ^= Bitboard::fromSquare(square);
+    }
+
+    Bitboard queens = board.pieces(PieceType::QUEEN, Color::WHITE) |
                       board.pieces(PieceType::QUEEN, Color::BLACK);
-    Bitboard bishops = queens | board.pieces(PieceType::BISHOP, Color::WHITE) | 
+    Bitboard bishops = queens | board.pieces(PieceType::BISHOP, Color::WHITE) |
                        board.pieces(PieceType::BISHOP, Color::BLACK);
-    Bitboard rooks = queens | board.pieces(PieceType::ROOK, Color::WHITE) | 
+    Bitboard rooks = queens | board.pieces(PieceType::ROOK, Color::WHITE) |
                      board.pieces(PieceType::ROOK, Color::BLACK);
 
     Bitboard attackers = attackersTo(board, square, occupancy);
     Color us = (board.sideToMove() == Color::WHITE) ? Color::BLACK : Color::WHITE;
 
     while (true) {
-        Bitboard ourAttackers = attackers;
+        Bitboard ourAttackers = attackers & occupancy;
         if (ourAttackers.count() == 0) break;
 
         next = popLeastValuable(board, occupancy, ourAttackers, us);
@@ -211,6 +235,7 @@ bool see_ge(const Board& board, const Move& move, int threshold) {
             break;
         }
     }
+
     return board.sideToMove() != us;
 }
 

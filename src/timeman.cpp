@@ -19,31 +19,38 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
     }
 
     if (time_left_ms <= 0) {
-        // No time control (go depth / go nodes / go infinite)
         soft_limit_ms = 999999999;
         hard_limit_ms = 999999999;
         return;
     }
 
     int available = std::max(1, time_left_ms - MOVE_OVERHEAD_MS);
+    int move_number = ply / 2 + 1;
 
     int base_time;
     if (mtg > 0) {
-        // Moves-to-go mode: distribute evenly with a small buffer
-        base_time = available / (mtg + 1) + (inc_ms * 3 / 4);
+        // Moves-to-go: distribute evenly, small buffer
+        base_time = available / std::max(1, mtg + 1) + inc_ms * 3 / 4;
     } else {
-        // Sudden death / Fischer: estimate moves remaining from game phase
-        // Early game (ply < 20) assume ~40 moves left, late game fewer
-        int move_number = ply / 2 + 1; // full moves played
-        int estimated_remaining = std::max(10, 50 - move_number);
-        base_time = available / estimated_remaining + (inc_ms * 3 / 4);
+        // Sudden death + Fischer increment
+        // OLD: max(10, 50 - move) — way too many estimated moves remaining
+        // NEW: max(8, 35 - move) — more realistic, uses time more aggressively
+        int est_moves_left = std::max(8, 35 - move_number);
+
+        // KEY FIX: We will earn increment on every future move.
+        // Factor that into our budget so we actually spend our time.
+        int effective_time = available + est_moves_left * inc_ms * 2 / 3;
+
+        base_time = effective_time / est_moves_left;
     }
 
-    // Clamp base_time so we never plan to use more than a fraction of remaining time
-    base_time = std::min(base_time, available / 4);
+    // Cap: never plan to use more than 40% of remaining clock (was 25%)
+    base_time = std::min(base_time, available * 2 / 5);
 
     soft_limit_ms = std::max(MIN_THINKING_TIME, base_time);
-    hard_limit_ms = std::max(soft_limit_ms, std::min(base_time * 3, available / 2));
+
+    // Hard limit: up to 5× base (was 3×), capped at 60% of remaining (was 50%)
+    hard_limit_ms = std::max(soft_limit_ms, std::min(base_time * 5, available * 3 / 5));
 }
 
 void TimeManager::set_node_limit(int64_t nodes, const uint64_t* counter) {
@@ -64,19 +71,16 @@ bool TimeManager::should_stop() const {
 }
 
 bool TimeManager::should_continue_depth(int /*depth*/, double last_depth_ms) const {
-    if (node_limit > 0) {
-        return !should_stop();
-    }
+    if (node_limit > 0) return !should_stop();
 
     int64_t elapsed = elapsed_ms();
 
-    // Apply stability factor: if best move is stable, use less time
+    // Stability-adjusted soft limit
     double adjusted_soft = soft_limit_ms * stability_factor();
-
     if (elapsed >= adjusted_soft) return false;
 
-    // Estimate if we can finish the next depth in time
-    double estimated_next = last_depth_ms * 3.0;
+    // Estimate next depth — branching factor ~2.5 (was 3.0, too pessimistic)
+    double estimated_next = last_depth_ms * 2.5;
     if (elapsed + estimated_next > hard_limit_ms) return false;
 
     return true;
@@ -91,14 +95,13 @@ void TimeManager::update_stability(chess::Move best_move) {
 }
 
 double TimeManager::stability_factor() const {
-    // If the best move hasn't changed for many iterations, spend less time.
-    // If it's unstable, allow up to full soft limit.
-    //   0 changes -> factor 0.6  (save time, we're confident)
-    //   1 change  -> factor 0.75
-    //   2+        -> factor 1.0  (unstable, use full time)
-    if (stability_count >= 4) return 0.5;
-    if (stability_count >= 3) return 0.6;
-    if (stability_count >= 2) return 0.75;
-    if (stability_count >= 1) return 0.85;
-    return 1.0; // best move just changed — use full allocation
+    // OLD: went down to 0.5 after just 4 stable iterations — way too aggressive
+    // NEW: minimum 0.65, requires 6+ stable iterations, much more gradual
+    if (stability_count >= 6) return 0.65;
+    if (stability_count >= 5) return 0.70;
+    if (stability_count >= 4) return 0.75;
+    if (stability_count >= 3) return 0.82;
+    if (stability_count >= 2) return 0.90;
+    if (stability_count >= 1) return 0.95;
+    return 1.0;
 }
