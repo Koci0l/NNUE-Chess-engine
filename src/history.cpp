@@ -6,20 +6,28 @@ CounterMoveHistory g_counterMoves;
 CaptureHistory g_captureHistory;
 ContinuationHistory g_contHist1ply;
 ContinuationHistory g_contHist2ply;
+CorrectionHistory g_correctionHistory;
 
 void ButterflyHistory::age() {
-    for (int c = 0; c < 2; ++c)
-        for (int i = 0; i < 64; ++i)
-            for (int j = 0; j < 64; ++j)
+    for (int c = 0; c < 2; ++c) {
+        for (int i = 0; i < 64; ++i) {
+            for (int j = 0; j < 64; ++j) {
                 table[c][i][j] /= 2;
+            }
+        }
+    }
 }
 
 bool ButterflyHistory::should_age() const {
-    for (int c = 0; c < 2; ++c)
-        for (int i = 0; i < 64; ++i)
-            for (int j = 0; j < 64; ++j)
-                if (std::abs(table[c][i][j]) > (HISTORY_MAX * 7) / 8)
+    for (int c = 0; c < 2; ++c) {
+        for (int i = 0; i < 64; ++i) {
+            for (int j = 0; j < 64; ++j) {
+                if (std::abs(table[c][i][j]) > (HISTORY_MAX * 7) / 8) {
                     return true;
+                }
+            }
+        }
+    }
     return false;
 }
 
@@ -33,6 +41,7 @@ void KillerMoves::clear() {
 void KillerMoves::store(int ply, chess::Move move) {
     if (ply >= MAX_PLY) return;
     if (move == killers[ply][0]) return;
+
     killers[ply][1] = killers[ply][0];
     killers[ply][0] = move;
 }
@@ -50,9 +59,11 @@ int KillerMoves::get_killer_score(int ply, chess::Move move) const {
 }
 
 void CounterMoveHistory::clear() {
-    for (int i = 0; i < 64; ++i)
-        for (int j = 0; j < 64; ++j)
+    for (int i = 0; i < 64; ++i) {
+        for (int j = 0; j < 64; ++j) {
             table[i][j] = chess::Move();
+        }
+    }
 }
 
 void CounterMoveHistory::update(chess::Move previous_move, chess::Move counter_move) {
@@ -69,4 +80,12 @@ chess::Move CounterMoveHistory::get(chess::Move previous_move) const {
 bool CounterMoveHistory::is_counter(chess::Move previous_move, chess::Move move) const {
     if (previous_move == chess::Move() || move == chess::Move()) return false;
     return table[previous_move.from().index()][previous_move.to().index()] == move;
+}
+
+void CorrectionHistory::age() {
+    for (int c = 0; c < 2; ++c) {
+        for (int i = 0; i < TABLE_SIZE; ++i) {
+            table[c][i] /= 2;
+        }
+    }
 }

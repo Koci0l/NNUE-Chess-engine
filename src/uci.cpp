@@ -39,7 +39,7 @@ void uci_loop() {
     initTT(256);
 
     std::cout << "info string Loading NNUE..." << std::endl;
-    g_nnue.loadNetwork("quantised-v8.bin"); 
+    g_nnue.loadNetwork("(768-1024)x2-1-8.bin"); 
     std::cout << "info string NNUE loaded" << std::endl;
 
     board.setFen(chess::constants::STARTPOS);
@@ -53,7 +53,7 @@ void uci_loop() {
         std::string command = tokens[0];
 
         if (command == "uci") {
-            std::cout << "id name MyNNUEEngine v21.0-ContHist" << std::endl;
+            std::cout << "id name Kociolek-2.1" << std::endl;
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
             std::cout << "uciok" << std::endl;
