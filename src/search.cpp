@@ -929,7 +929,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
         
-        // FIX: Store the root node evaluation in the TT!
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
         auto depth_end = std::chrono::high_resolution_clock::now();
