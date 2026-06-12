@@ -6,7 +6,7 @@
 TTEntry* tt = nullptr;
 size_t TT_SIZE = 1 << 20;
 size_t TT_MASK = TT_SIZE - 1;
-uint8_t current_generation = 0; // NEW
+uint8_t current_generation = 0;
 
 void initTT(size_t mb) {
     size_t bytes = mb * 1024ULL * 1024ULL;
@@ -56,14 +56,22 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
     }
 
     bool replace = false;
-    // FIX: Always replace if the entry is from an older generation
-    if (entry.key == 0 || entry.generation != current_generation) {
-        replace = true;
+    
+    // --- FIXED REPLACEMENT SCHEME ---
+    if (entry.key == 0) {
+        replace = true; // Empty slot
     } else if (entry.key == key) {
-        replace = (depth >= entry.depth - 3);
+        // Same position: Always update if depth is close or if it's a PV node
+        replace = (depth >= entry.depth - 4 || pv);
     } else {
-        replace = (depth >= entry.depth - 4);
+        // Collision: Use a priority score. 
+        // Deeper is better. Newer is better (1 age difference = ~2 depth penalty).
+        // The (uint8_t) cast safely handles the 255 -> 0 wrap-around.
+        int age_diff = (uint8_t)(current_generation - entry.generation); 
+        int entry_priority = entry.depth - (age_diff * 2); 
+        replace = (depth >= entry_priority);
     }
+    // --------------------------------
 
     if (replace) {
         entry.key = key;
@@ -72,7 +80,7 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
         entry.best_move = move_to_store;
         entry.flag = flag;
         entry.pv = pv;
-        entry.generation = current_generation; // NEW
+        entry.generation = current_generation;
     }
 }
 
