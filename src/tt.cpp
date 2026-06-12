@@ -1,33 +1,28 @@
 #include "tt.h"
 #include "types.h"
-
 #include <cstring>
 #include <iostream>
 
 TTEntry* tt = nullptr;
 size_t TT_SIZE = 1 << 20;
 size_t TT_MASK = TT_SIZE - 1;
+uint8_t current_generation = 0; // NEW
 
 void initTT(size_t mb) {
     size_t bytes = mb * 1024ULL * 1024ULL;
     size_t entries = bytes / sizeof(TTEntry);
-
     size_t power = 1;
     while (power * 2 <= entries) {
         power *= 2;
     }
-
     if (power == 0) {
         power = 1;
     }
-
     TT_SIZE = power;
     TT_MASK = TT_SIZE - 1;
-
     delete[] tt;
     tt = new TTEntry[TT_SIZE];
     std::memset(tt, 0, TT_SIZE * sizeof(TTEntry));
-
     std::cout << "info string Hash table initialized: " << mb << " MB ("
               << TT_SIZE << " entries)" << std::endl;
 }
@@ -39,12 +34,12 @@ void clearTT() {
 }
 
 void advanceTTGeneration() {
+    current_generation++;
 }
 
 void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
              TTFlag flag, int ply_from_root, bool pv) {
     if (!tt) return;
-
     size_t index = key & TT_MASK;
     TTEntry& entry = tt[index];
 
@@ -61,8 +56,8 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
     }
 
     bool replace = false;
-
-    if (entry.key == 0) {
+    // FIX: Always replace if the entry is from an older generation
+    if (entry.key == 0 || entry.generation != current_generation) {
         replace = true;
     } else if (entry.key == key) {
         replace = (depth >= entry.depth - 3);
@@ -77,6 +72,7 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
         entry.best_move = move_to_store;
         entry.flag = flag;
         entry.pv = pv;
+        entry.generation = current_generation; // NEW
     }
 }
 
@@ -87,7 +83,6 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
         tt_pv = false;
         return false;
     }
-
     size_t index = key & TT_MASK;
     const TTEntry& entry = tt[index];
 
@@ -121,16 +116,13 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
             return true;
         }
     }
-
     return false;
 }
 
 bool peekTT(uint64_t key, TTEntry& out) {
     if (!tt) return false;
-
     const TTEntry& e = tt[key & TT_MASK];
     if (e.key != key) return false;
-
     out = e;
     return true;
 }

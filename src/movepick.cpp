@@ -171,7 +171,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 if (m_ctx.tt_move != chess::Move()) {
                     ensureLegal();
                     if (isValid(m_ctx.tt_move)) {
-                        markReturned(m_ctx.tt_move);
                         m_last_score = 3000000;
 
                         bool tt_capture = m_board.at(m_ctx.tt_move.to()) != chess::Piece::NONE ||
@@ -206,8 +205,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     int score = m_captures[m_capture_idx].score;
                     ++m_capture_idx;
 
-                    if (wasReturned(move)) continue;
-
                     if (!chess::see::see_ge(m_board, move, 0)) {
                         if (m_bad_capture_count < 256) {
                             m_bad_captures[m_bad_capture_count].move = move;
@@ -217,7 +214,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                         continue;
                     }
 
-                    markReturned(move);
                     m_last_score = 2000000 + score;
                     is_quiet_out = false;
                     return move;
@@ -230,14 +226,14 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
             case MovePickStage::KILLER_1: {
                 m_stage = MovePickStage::KILLER_2;
 
-                if (!m_skip_quiets && m_killer1 != chess::Move() && !wasReturned(m_killer1)) {
+                if (!m_skip_quiets && m_killer1 != chess::Move() &&
+                    m_killer1 != m_ctx.tt_move) {
                     ensureLegal();
                     if (isValid(m_killer1)) {
                         bool is_capture = m_board.at(m_killer1.to()) != chess::Piece::NONE ||
                                           m_killer1.typeOf() == chess::Move::ENPASSANT ||
                                           m_killer1.typeOf() == chess::Move::PROMOTION;
                         if (!is_capture) {
-                            markReturned(m_killer1);
                             m_last_score = 1500000;
                             is_quiet_out = true;
                             return m_killer1;
@@ -250,14 +246,14 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
             case MovePickStage::KILLER_2: {
                 m_stage = MovePickStage::COUNTER_MOVE;
 
-                if (!m_skip_quiets && m_killer2 != chess::Move() && !wasReturned(m_killer2)) {
+                if (!m_skip_quiets && m_killer2 != chess::Move() &&
+                    m_killer2 != m_ctx.tt_move && m_killer2 != m_killer1) {
                     ensureLegal();
                     if (isValid(m_killer2)) {
                         bool is_capture = m_board.at(m_killer2.to()) != chess::Piece::NONE ||
                                           m_killer2.typeOf() == chess::Move::ENPASSANT ||
                                           m_killer2.typeOf() == chess::Move::PROMOTION;
                         if (!is_capture) {
-                            markReturned(m_killer2);
                             m_last_score = 1490000;
                             is_quiet_out = true;
                             return m_killer2;
@@ -271,14 +267,15 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 m_stage = MovePickStage::GENERATE_QUIETS;
 
                 if (!m_skip_quiets && m_ctx.counter_move != chess::Move() &&
-                    !wasReturned(m_ctx.counter_move)) {
+                    m_ctx.counter_move != m_ctx.tt_move &&
+                    m_ctx.counter_move != m_killer1 &&
+                    m_ctx.counter_move != m_killer2) {
                     ensureLegal();
                     if (isValid(m_ctx.counter_move)) {
                         bool is_capture = m_board.at(m_ctx.counter_move.to()) != chess::Piece::NONE ||
                                           m_ctx.counter_move.typeOf() == chess::Move::ENPASSANT ||
                                           m_ctx.counter_move.typeOf() == chess::Move::PROMOTION;
                         if (!is_capture) {
-                            markReturned(m_ctx.counter_move);
                             m_last_score = 1250000;
                             is_quiet_out = true;
                             return m_ctx.counter_move;
@@ -315,9 +312,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     int score = m_quiets[m_quiet_idx].score;
                     ++m_quiet_idx;
 
-                    if (wasReturned(move)) continue;
-
-                    markReturned(move);
                     m_last_score = score;
                     is_quiet_out = true;
                     return move;
@@ -333,9 +327,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     int score = m_bad_captures[m_bad_capture_idx].score;
                     ++m_bad_capture_idx;
 
-                    if (wasReturned(move)) continue;
-
-                    markReturned(move);
                     m_last_score = -1000000 + score;
                     is_quiet_out = false;
                     return move;
@@ -488,7 +479,6 @@ chess::Move QSearchMovePicker::next() {
                             if (!is_tactical) break;
                         }
 
-                        markReturned(m_tt_move);
                         m_last_score = 3000000;
                         return m_tt_move;
                     }
@@ -510,9 +500,6 @@ chess::Move QSearchMovePicker::next() {
                     m_last_score = m_moves[m_move_idx].score;
                     ++m_move_idx;
 
-                    if (wasReturned(move)) continue;
-
-                    markReturned(move);
                     return move;
                 }
 
