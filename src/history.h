@@ -90,6 +90,12 @@ struct CaptureHistory {
         int next = std::clamp(cur + delta, -HISTORY_MAX, HISTORY_MAX);
         table[piece][to][captured] = static_cast<int16_t>(next);
     }
+    void age() {
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 64; ++j)
+                for (int k = 0; k < 6; ++k)
+                    table[i][j][k] /= 2;
+    }
 };
 
 struct ContinuationHistory {

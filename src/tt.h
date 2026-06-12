@@ -1,5 +1,4 @@
 #pragma once
-
 #include "chess.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -13,20 +12,19 @@ struct TTEntry {
     chess::Move best_move;
     TTFlag flag = TT_EXACT;
     bool pv = false;
+    uint8_t generation = 0; // NEW: Tracks age of the entry
 };
 
 void initTT(size_t mb);
 void clearTT();
 void advanceTTGeneration();
-
 void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
              TTFlag flag, int ply_from_root, bool pv = false);
-
 bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
              chess::Move& tt_move, int ply_from_root, bool& tt_pv);
-
 bool peekTT(uint64_t key, TTEntry& out);
 
 extern TTEntry* tt;
 extern size_t TT_SIZE;
 extern size_t TT_MASK;
+extern uint8_t current_generation; // NEW
