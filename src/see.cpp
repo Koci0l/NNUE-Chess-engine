@@ -43,7 +43,6 @@ namespace {
         return PieceType::NONE;
     }
 
-    // 🚀 BLAZING FAST ATTACK GENERATION USING chess.hpp
     inline Bitboard attackersTo(const Board& board, Square sq, Bitboard occ) {
         Bitboard atk(0ULL);
         
