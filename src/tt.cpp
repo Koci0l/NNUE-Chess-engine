@@ -6,7 +6,7 @@
 TTEntry* tt = nullptr;
 size_t TT_SIZE = 1 << 20;
 size_t TT_MASK = TT_SIZE - 1;
-uint8_t current_generation = 0;
+uint8_t current_generation = 0; // NEW
 
 void initTT(size_t mb) {
     size_t bytes = mb * 1024ULL * 1024ULL;
@@ -50,14 +50,12 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
         stored_score = score - ply_from_root;
     }
 
-    chess::Move move_to_store = best_move;
-    if (move_to_store == chess::Move() && entry.key == key) {
+    uint16_t move_to_store = best_move.move();
+    if (move_to_store == 0 && entry.key == key) {
         move_to_store = entry.best_move;
     }
 
     bool replace = false;
-    
-    // --- FIXED REPLACEMENT SCHEME ---
     if (entry.key == 0) {
         replace = true; // Empty slot
     } else if (entry.key == key) {
@@ -65,17 +63,14 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
         replace = (depth >= entry.depth - 4 || pv);
     } else {
         // Collision: Use a priority score. 
-        // Deeper is better. Newer is better (1 age difference = ~2 depth penalty).
-        // The (uint8_t) cast safely handles the 255 -> 0 wrap-around.
-        int age_diff = (uint8_t)(current_generation - entry.generation); 
+        int age_diff = (uint8_t)(current_generation - entry.generation);
         int entry_priority = entry.depth - (age_diff * 2); 
         replace = (depth >= entry_priority);
     }
-    // --------------------------------
 
     if (replace) {
         entry.key = key;
-        entry.depth = static_cast<int16_t>(depth);
+        entry.depth = static_cast<int8_t>(depth); // FIX: was int16_t cast
         entry.score = static_cast<int16_t>(stored_score);
         entry.best_move = move_to_store;
         entry.flag = flag;
@@ -100,7 +95,7 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
         return false;
     }
 
-    tt_move = entry.best_move;
+    tt_move = chess::Move(entry.best_move); // Convert back to chess::Move
     tt_pv = entry.pv;
 
     if (entry.depth >= depth) {
