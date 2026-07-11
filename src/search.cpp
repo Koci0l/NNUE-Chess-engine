@@ -10,6 +10,8 @@
 #include <vector>
 #include <chrono>
 
+bool g_silent = false;
+
 static int lmr_reductions[64][64];
 
 void initLMR() {
@@ -796,12 +798,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 }
 
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
-                   int64_t node_limit, int* score_out) {
+                   int64_t node_limit, int* score_out, uint64_t* nodes_out) {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
     if (moves.empty()) return chess::Move();
     if (moves.size() == 1) {
-        std::cout << "info string only move" << std::endl;
+        if (!g_silent) std::cout << "info string only move" << std::endl;
         if (score_out) *score_out = 0;
         return moves[0];
     }
@@ -953,6 +955,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             score_str = "cp " + std::to_string(best_score);
         }
 
+        if (!g_silent)
         std::cout 
         << "info score " << score_str 
         << " depth " << depth 
@@ -965,6 +968,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
 search_done:
     if (score_out) *score_out = best_score;
+    if (nodes_out) *nodes_out = stats.nodes;
     std::cerr << "info string total nodes searched " << stats.nodes << std::endl;
     return best_move;
 }
