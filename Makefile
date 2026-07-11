@@ -1,7 +1,7 @@
-CXX = g++
-CXXFLAGS = -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread
 
-TARGET = Kociolek-2.0.exe
+TARGET ?= $(or $(EXE), Kociolek-2.1.exe)
 
 SOURCES = $(wildcard src/*.cpp)
 
