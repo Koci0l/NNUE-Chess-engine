@@ -59,6 +59,7 @@ static void run_bench(ThreadInfo& thread) {
     g_captureHistory.clear();
     g_contHist1ply.clear();
     g_contHist2ply.clear();
+    g_correctionHistory.clear();
 
     g_silent = true;
     uint64_t total_nodes = 0;

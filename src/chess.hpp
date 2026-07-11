@@ -1289,8 +1289,8 @@ class Move {
     static constexpr std::uint16_t CASTLING  = 3 << 14;
 
    private:
-    std::uint16_t move_;
-    std::int16_t score_;
+    std::uint16_t move_ = 0;
+    std::int16_t score_ = 0;
 };
 
 }  // namespace chess
