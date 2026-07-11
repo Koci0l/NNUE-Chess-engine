@@ -10,6 +10,10 @@
 #include <string>
 #include <chrono>
 
+#ifndef EVALFILE
+#define EVALFILE "(768-1024)x2-1-8.bin"
+#endif
+
 static const int BENCH_DEPTH = 12;
 
 static const char* BENCH_FENS[] = {
@@ -106,6 +110,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             std::cout << "id author Kociolek" << std::endl;
             std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
             std::cout << "option name Threads type spin default 1 min 1 max 1" << std::endl;
+            std::cout << "option name EvalFile type string default " << EVALFILE << std::endl;
             std::cout << "uciok" << std::endl;
             std::cout.flush();
 
@@ -233,7 +238,7 @@ void uci_loop(int argc, char* argv[]) {
     initTT(256);
 
     std::cout << "info string Loading NNUE..." << std::endl;
-    g_nnue.loadNetwork("(768-1024)x2-1-8.bin");
+    g_nnue.loadNetwork(EVALFILE);
     std::cout << "info string NNUE loaded" << std::endl;
 
     board.setFen(chess::constants::STARTPOS);
