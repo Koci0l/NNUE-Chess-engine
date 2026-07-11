@@ -11,7 +11,7 @@
 #include <chrono>
 
 #ifndef EVALFILE
-#define EVALFILE "(768-1024)x2-1-8.bin"
+#define EVALFILE "768-1024x2-1-8.bin"
 #endif
 
 static const int BENCH_DEPTH = 12;
