@@ -4,6 +4,8 @@
 #include "timeman.h"
 #include "nnue.h"
 
+extern bool g_silent;
+
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);
 
@@ -15,6 +17,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
               chess::Move excluded_move = chess::Move());
               
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
-                   int64_t node_limit = 0, int* score_out = nullptr);
+                   int64_t node_limit = 0, int* score_out = nullptr, uint64_t* nodes_out = nullptr);
                    
 std::vector<chess::Move> extractPV(chess::Board board, int max_depth);
