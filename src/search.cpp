@@ -723,10 +723,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
 
-            if (!in_singular_search) {
-                storeTT(hash, depth, beta, best_move, TT_LOWER, ply_from_root);
-            }
-            return beta;
+            if (!in_singular_search)
+                storeTT(hash, depth, best_score, best_move, TT_LOWER, ply_from_root);
+            return best_score;
         }
 
         if (eval > alpha) alpha = eval;
