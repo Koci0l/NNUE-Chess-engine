@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread
+CXXFLAGS ?= -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread -static
 
 EVALFILE ?= 768-1024x2-1-8.bin
 CXXFLAGS += -DEVALFILE='"$(EVALFILE)"'
