@@ -431,12 +431,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     int extension = in_check ? 1 : 0;
 
-    if (!is_pv_node && !in_check && !in_singular_search &&
-        depth <= 7 && depth >= 1 && std::abs(beta) < MATE_SCORE - 100) {
-        int rfp_margin = 85 * depth;
-        if (static_eval - rfp_margin >= beta) {
-            return static_eval - rfp_margin;
-        }
+    int rfp_margin = (improving ? 70 : 95) * depth;
+    if (!is_pv_node && !in_check && !in_singular_search
+        && depth <= 7 && depth >= 1 && std::abs(beta) < MATE_SCORE - 100) {
+        if (static_eval - rfp_margin >= beta)
+            return static_eval - rfp_margin; // or static_eval (soft) — pick one and stick to it
     }
 
     if (!is_pv_node && !in_check && !in_singular_search && depth <= 3) {
@@ -452,7 +451,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     if (allow_null && !in_check && !is_pv_node && !in_singular_search &&
         depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta) {
-        int R = 3 + depth / 3;
+        int R = 3 + depth / 3 + (improving ? 1 : 0);
         R = std::min(R, depth - 1);
         AccumulatorPair saved_acc = thread.accumulatorStack.current();
         board.makeNullMove();
