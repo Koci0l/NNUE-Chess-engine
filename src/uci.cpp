@@ -5,6 +5,7 @@
 #include "zobrist.h"
 #include "nnue.h"
 #include "policy.h"
+#include "policy_embed.h"
 
 #include <iostream>
 #include <sstream>
@@ -13,13 +14,14 @@
 #include <chrono>
 #include <cctype>
 #include <algorithm>
+#include <fstream>
 
 #ifndef EVALFILE
 #define EVALFILE "768-1024x2-1-8.bin"
 #endif
 
 #ifndef POLICYFILE
-#define POLICYFILE "policy_quantised.bin"
+#define POLICYFILE "quantised.bin"
 #endif
 
 static const int BENCH_DEPTH = 12;
@@ -94,6 +96,9 @@ static void run_bench(ThreadInfo& thread) {
     uint64_t nps = (total_nodes * 1000) / elapsed_ms;
 
     std::cout << total_nodes << " nodes " << nps << " nps" << std::endl;
+    std::cout << "info string policy_status "
+              << (g_policy.loaded ? "LOADED" : "MISSING")
+              << std::endl;
     std::cout.flush();
 }
 
@@ -143,7 +148,10 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                     path += tokens[i];
                     if (i + 1 < tokens.size()) path += " ";
                 }
-                g_policy.load(path);
+                // Optional file override of embedded net
+                if (!g_policy.load(path)) {
+                    std::cout << "info string PolicyFile load failed; keeping previous net" << std::endl;
+                }
             }
 
         } else if (command == "bench") {
@@ -232,15 +240,11 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         } else if (command == "policy" || command == "policydebug") {
             int topN = 16;
             if (tokens.size() >= 2) {
-                try {
-                    topN = std::stoi(tokens[1]);
-                } catch (...) {
-                }
+                try { topN = std::stoi(tokens[1]); } catch (...) {}
             }
             g_policy.debugPosition(board, topN);
 
         } else if (command == "policymove") {
-            // policymove e2e4
             if (tokens.size() < 2) {
                 std::cout << "info string usage: policymove <uci>" << std::endl;
             } else {
@@ -289,9 +293,10 @@ void uci_loop(int argc, char* argv[]) {
     g_nnue.loadNetwork(EVALFILE);
     std::cout << "info string NNUE loaded" << std::endl;
 
-    std::cout << "info string Loading Policy..." << std::endl;
-    if (!g_policy.load(POLICYFILE)) {
-        std::cout << "info string Policy not loaded (ordering will ignore policy)" << std::endl;
+    // Always load embedded policy first (OpenBench-safe: no file required).
+    std::cout << "info string Loading Policy (embedded)..." << std::endl;
+    if (!g_policy.loadFromMemory(g_policy_embed_data, g_policy_embed_size, "embedded")) {
+        std::cout << "info string Policy embedded load FAILED" << std::endl;
     }
 
     board.setFen(chess::constants::STARTPOS);

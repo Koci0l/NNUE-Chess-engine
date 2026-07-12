@@ -1,4 +1,5 @@
 #include "policy.h"
+#include "policy_embed.h"
 #include "see.h"
 
 #include <algorithm>
@@ -125,11 +126,8 @@ PolicyNet::PolicyNet() {
         offsets[pc][64] = curr;
     }
 
-    // FROM_TO = OFFSETS[5][64] + PROMOS + 2 + 8
     from_to   = offsets[5][64] + POLICY_PROMOS + 2 + 8;
     num_moves = 2 * from_to;
-
-    // Verified vs trainer startpos distribution
     l1_out_major = true;
 }
 
@@ -141,9 +139,67 @@ void PolicyNet::clear() {
     l1b.clear();
 }
 
-bool PolicyNet::load(const std::string& path) {
+bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const char* label) {
     clear();
 
+    if (!data || size == 0) {
+        std::cerr << "info string Policy: empty memory blob ("
+                  << (label ? label : "?") << ")" << std::endl;
+        return false;
+    }
+
+    const size_t expected =
+        size_t(POLICY_INPUT_SIZE) * size_t(POLICY_HL) +
+        size_t(POLICY_HL) +
+        size_t(POLICY_HL_PAIR) * size_t(num_moves) +
+        size_t(num_moves);
+
+    if (size != expected) {
+        std::cerr << "info string Policy: size mismatch got " << size
+                  << " expected " << expected
+                  << " (from_to=" << from_to
+                  << " num_moves=" << num_moves
+                  << " label=" << (label ? label : "?") << ")"
+                  << std::endl;
+        return false;
+    }
+
+    auto read_q = [&](std::vector<float>& dst, size_t n, size_t& off) -> bool {
+        if (off + n > size) return false;
+        dst.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const int8_t q = static_cast<int8_t>(data[off++]);
+            dst[i] = float(q) / float(POLICY_QA);
+        }
+        return true;
+    };
+
+    size_t off = 0;
+    if (!read_q(l0w, size_t(POLICY_INPUT_SIZE) * size_t(POLICY_HL), off) ||
+        !read_q(l0b, size_t(POLICY_HL), off) ||
+        !read_q(l1w, size_t(POLICY_HL_PAIR) * size_t(num_moves), off) ||
+        !read_q(l1b, size_t(num_moves), off) ||
+        off != size) {
+        std::cerr << "info string Policy: truncated memory read" << std::endl;
+        clear();
+        return false;
+    }
+
+    l1_out_major = true;
+    loaded = true;
+
+    std::cout << "info string Policy loaded " << (label ? label : "memory")
+              << " input=" << POLICY_INPUT_SIZE
+              << " hl=" << POLICY_HL
+              << " from_to=" << from_to
+              << " moves=" << num_moves
+              << " l1_out_major=1"
+              << " bytes=" << size
+              << std::endl;
+    return true;
+}
+
+bool PolicyNet::load(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         std::cerr << "info string Policy: failed to open " << path << std::endl;
@@ -154,53 +210,16 @@ bool PolicyNet::load(const std::string& path) {
     const auto sz = static_cast<size_t>(in.tellg());
     in.seekg(0, std::ios::beg);
 
-    const size_t expected =
-        size_t(POLICY_INPUT_SIZE) * size_t(POLICY_HL) +
-        size_t(POLICY_HL) +
-        size_t(POLICY_HL_PAIR) * size_t(num_moves) +
-        size_t(num_moves);
-
-    if (sz != expected) {
-        std::cerr << "info string Policy: size mismatch got " << sz
-                  << " expected " << expected
-                  << " (from_to=" << from_to
-                  << " num_moves=" << num_moves << ")"
-                  << std::endl;
-        return false;
-    }
-
-    auto read_q = [&](std::vector<float>& dst, size_t n) -> bool {
-        dst.resize(n);
-        for (size_t i = 0; i < n; ++i) {
-            int8_t q = 0;
-            in.read(reinterpret_cast<char*>(&q), 1);
-            if (!in) return false;
-            dst[i] = float(q) / float(POLICY_QA);
+    std::vector<std::uint8_t> buf(sz);
+    if (sz > 0) {
+        in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(sz));
+        if (!in) {
+            std::cerr << "info string Policy: failed reading " << path << std::endl;
+            return false;
         }
-        return true;
-    };
-
-    if (!read_q(l0w, size_t(POLICY_INPUT_SIZE) * size_t(POLICY_HL)) ||
-        !read_q(l0b, size_t(POLICY_HL)) ||
-        !read_q(l1w, size_t(POLICY_HL_PAIR) * size_t(num_moves)) ||
-        !read_q(l1b, size_t(num_moves))) {
-        std::cerr << "info string Policy: truncated read" << std::endl;
-        clear();
-        return false;
     }
 
-    // Keep correct layout after load
-    l1_out_major = true;
-
-    loaded = true;
-    std::cout << "info string Policy loaded " << path
-              << " input=" << POLICY_INPUT_SIZE
-              << " hl=" << POLICY_HL
-              << " from_to=" << from_to
-              << " moves=" << num_moves
-              << " l1_out_major=1"
-              << std::endl;
-    return true;
+    return loadFromMemory(buf.data(), buf.size(), path.c_str());
 }
 
 // ============================================================================
@@ -224,7 +243,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
     uint64_t threats = 0;
     const Bitboard occ = board.occ();
 
-    // Pawns
     {
         uint64_t bb = board.pieces(PieceType::PAWN, side).getBits();
         while (bb) {
@@ -233,8 +251,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
             threats |= attacks::pawn(side, Square(sq)).getBits();
         }
     }
-
-    // Knights
     {
         uint64_t bb = board.pieces(PieceType::KNIGHT, side).getBits();
         while (bb) {
@@ -243,8 +259,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
             threats |= attacks::knight(Square(sq)).getBits();
         }
     }
-
-    // Bishops
     {
         uint64_t bb = board.pieces(PieceType::BISHOP, side).getBits();
         while (bb) {
@@ -253,8 +267,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
             threats |= attacks::bishop(Square(sq), occ).getBits();
         }
     }
-
-    // Rooks
     {
         uint64_t bb = board.pieces(PieceType::ROOK, side).getBits();
         while (bb) {
@@ -263,8 +275,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
             threats |= attacks::rook(Square(sq), occ).getBits();
         }
     }
-
-    // Queens
     {
         uint64_t bb = board.pieces(PieceType::QUEEN, side).getBits();
         while (bb) {
@@ -274,14 +284,12 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
         }
     }
 
-    // King
     threats |= attacks::king(board.kingSq(side)).getBits();
-
     return threats;
 }
 
 // ============================================================================
-// map_base_inputs
+// Features
 // ============================================================================
 
 void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfeats) const {
@@ -335,7 +343,7 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
 }
 
 // ============================================================================
-// map_move_to_index
+// Move index
 // ============================================================================
 
 int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) const {
@@ -397,7 +405,6 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
         if (pc < 0 || pc > 5) {
             return -1;
         }
-
         const uint64_t dest_bb = destinations[src][pc];
         const uint64_t below = dest_bb & ((1ULL << dst) - 1ULL);
         idx = offsets[pc][src] + popcount64(below);
@@ -413,7 +420,7 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
 }
 
 // ============================================================================
-// Forward pass
+// Forward
 // ============================================================================
 
 static inline float crelu01(float x) {
@@ -438,9 +445,7 @@ bool PolicyNet::logitsLegalMoves(const chess::Board& board,
 
     for (int i = 0; i < nfeats; ++i) {
         const int f = feats[i];
-        if (f < 0 || f >= POLICY_INPUT_SIZE) {
-            continue;
-        }
+        if (f < 0 || f >= POLICY_INPUT_SIZE) continue;
         const float* row = l0w.data() + size_t(f) * size_t(POLICY_HL);
         for (int j = 0; j < POLICY_HL; ++j) {
             h0[j] += row[j];
@@ -462,13 +467,11 @@ bool PolicyNet::logitsLegalMoves(const chess::Board& board,
         float logit = l1b[static_cast<size_t>(mi)];
 
         if (l1_out_major) {
-            // Correct for quantised.bin: [out][in] = l1w[mi * HL_PAIR + k]
             const float* row = l1w.data() + size_t(mi) * size_t(POLICY_HL_PAIR);
             for (int k = 0; k < POLICY_HL_PAIR; ++k) {
                 logit += h1[k] * row[k];
             }
         } else {
-            // Alternate [in][out]
             for (int k = 0; k < POLICY_HL_PAIR; ++k) {
                 logit += h1[k] * l1w[size_t(k) * size_t(num_moves) + size_t(mi)];
             }
@@ -489,9 +492,7 @@ bool PolicyNet::scoreLegalMoves(const chess::Board& board,
 
     const int n = static_cast<int>(moves.size());
     float mx = out_probs[0];
-    for (int i = 1; i < n; ++i) {
-        mx = std::max(mx, out_probs[i]);
-    }
+    for (int i = 1; i < n; ++i) mx = std::max(mx, out_probs[i]);
 
     float sum = 0.f;
     for (int i = 0; i < n; ++i) {
@@ -500,9 +501,7 @@ bool PolicyNet::scoreLegalMoves(const chess::Board& board,
     }
 
     const float inv = (sum > 0.f) ? (1.f / sum) : 0.f;
-    for (int i = 0; i < n; ++i) {
-        out_probs[i] *= inv;
-    }
+    for (int i = 0; i < n; ++i) out_probs[i] *= inv;
     return true;
 }
 
@@ -542,9 +541,7 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";
-    for (int i = 0; i < nfeats; ++i) {
-        std::cout << " " << feats[i];
-    }
+    for (int i = 0; i < nfeats; ++i) std::cout << " " << feats[i];
     std::cout << std::endl;
 
     {

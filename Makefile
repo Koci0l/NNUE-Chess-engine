@@ -13,10 +13,17 @@ SOURCES = $(wildcard src/*.cpp)
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCES)
+# Optional: regenerate embed when quantised.bin changes
+# (OpenBench does not need this if policy_embed.h is committed)
+src/policy_embed.h: quantised.bin tools/embed_policy.py
+	python tools/embed_policy.py quantised.bin src/policy_embed.h
+
+$(TARGET): $(SOURCES) src/policy_embed.h
 	$(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
+
+embed: src/policy_embed.h
 
 clean:
 	rm -f $(TARGET)
 
-.PHONY: all clean
+.PHONY: all clean embed
