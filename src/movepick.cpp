@@ -22,7 +22,7 @@ MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
       m_policy_ready(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
-    std::memset(m_policy_probs, 0, sizeof(m_policy_probs));
+    std::memset(m_policy_bonus, 0, sizeof(m_policy_bonus));
 }
 
 bool MovePicker::wasReturned(const chess::Move& move) const {
@@ -50,9 +50,16 @@ void MovePicker::ensurePolicy() {
         return;
     }
     m_policy_ready = true;
-    std::memset(m_policy_probs, 0, sizeof(m_policy_probs));
+    std::memset(m_policy_bonus, 0, sizeof(m_policy_bonus));
 
     if (!g_policy.loaded) {
+        return;
+    }
+    if (m_skip_quiets) {
+        return;
+    }
+    // Depth gate: skip most nodes (huge NPS recovery under TC)
+    if (m_depth < POLICY_MIN_DEPTH) {
         return;
     }
 
@@ -61,7 +68,8 @@ void MovePicker::ensurePolicy() {
         return;
     }
 
-    g_policy.scoreLegalMoves(m_board, m_all_legal, m_policy_probs);
+    // Fast path: quiets only, no softmax
+    g_policy.scoreQuietsForOrdering(m_board, m_all_legal, m_policy_bonus);
 }
 
 bool MovePicker::isValid(const chess::Move& move) const {
@@ -106,13 +114,13 @@ int MovePicker::scoreOneCapture(const chess::Move& move) {
     return score;
 }
 
-static float policyProbFor(const chess::Movelist& legal,
-                           const float* probs,
-                           const chess::Move& m) {
+static float policyBonusFor(const chess::Movelist& legal,
+                            const float* bonus,
+                            const chess::Move& m) {
     const int n = static_cast<int>(legal.size());
     for (int i = 0; i < n; ++i) {
         if (legal[i] == m) {
-            return probs[i];
+            return bonus[i];
         }
     }
     return 0.f;
@@ -147,12 +155,12 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // SAFE integration: policy only reshuffles quiets.
-    // TT / killers / counters / captures / SEE path untouched.
-    if (g_policy.loaded) {
+    // Policy only reshuffles quiets; TT/killers/captures untouched.
+    // Depth-gated inside ensurePolicy().
+    if (g_policy.loaded && m_depth >= POLICY_MIN_DEPTH) {
         ensurePolicy();
-        const float p = policyProbFor(m_all_legal, m_policy_probs, move);
-        score += static_cast<int>(p * static_cast<float>(POLICY_QUIET_WEIGHT));
+        const float b = policyBonusFor(m_all_legal, m_policy_bonus, move);
+        score += static_cast<int>(b);
     }
 
     return score;
@@ -184,6 +192,11 @@ void MovePicker::scoreCaptures() {
 
 void MovePicker::scoreQuiets() {
     ensureLegal();
+
+    // Compute policy once before scoring quiets (if depth allows)
+    if (g_policy.loaded && m_depth >= POLICY_MIN_DEPTH && !m_skip_quiets) {
+        ensurePolicy();
+    }
 
     m_quiet_count = 0;
     m_quiet_idx = 0;
@@ -388,7 +401,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker
+// QSearchMovePicker  (unchanged — no policy)
 // ============================================================================
 
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)

@@ -89,7 +89,7 @@ private:
     bool m_legal_generated;
 
     // Policy cache for this node (aligned with m_all_legal indices)
-    float m_policy_probs[256];
+    float m_policy_bonus[256];
     bool  m_policy_ready;
 };
 
