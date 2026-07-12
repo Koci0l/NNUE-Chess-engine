@@ -2,6 +2,8 @@
 
 #include "chess.hpp"
 #include "types.h"
+#include "policy.h"
+
 #include <vector>
 
 struct MovePickerContext {
@@ -51,6 +53,7 @@ private:
     int scoreOneQuiet(const chess::Move& move);
     bool isValid(const chess::Move& move) const;
     void ensureLegal();
+    void ensurePolicy();
 
     bool wasReturned(const chess::Move& move) const;
     void markReturned(const chess::Move& move);
@@ -84,6 +87,10 @@ private:
 
     chess::Movelist m_all_legal;
     bool m_legal_generated;
+
+    // Policy cache for this node (aligned with m_all_legal indices)
+    float m_policy_probs[256];
+    bool  m_policy_ready;
 };
 
 class QSearchMovePicker {
