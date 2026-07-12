@@ -11,10 +11,18 @@ struct SearchStack;
 
 // ThreadInfo definition
 struct ThreadInfo {
-    AccumulatorStack accumulatorStack;
-    
+    AccumulatorStack accumulatorStack{};
+
     void reset(const chess::Board& board) {
         accumulatorStack.resetAccumulators(board);
+    }
+
+    // Reset search-local thread state (stack index, etc.)
+    void clear() {
+        // Drop any pushed accumulator frames; next search will reset from FEN
+        while (accumulatorStack.size() > 1) {
+            accumulatorStack.pop();
+        }
     }
 };
 
@@ -63,7 +71,11 @@ struct SearchStats {
 
 struct SearchStack {
     int static_eval = 0;
-    chess::Move current_move;
-    chess::Move excluded_move;
+    chess::Move current_move{};
+    chess::Move excluded_move{};
     chess::Piece moved_piece = chess::Piece::NONE;
+
+    // Node-type tracking for LMR / reductions
+    bool cutnode = false;
+    bool ttPv    = false;
 };
