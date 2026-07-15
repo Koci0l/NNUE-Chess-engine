@@ -4,11 +4,14 @@
 #include "movepick.h"
 #include "see.h"
 #include "zobrist.h"
+#include "policy.h"
+
 #include <iostream>
 #include <cmath>
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <cstring>
 
 bool g_silent = false;
 
@@ -45,6 +48,9 @@ constexpr int MAX_CAPTURES_TRACKED = 32;
 constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
+
+// Policy LMR: only deepen reduction on low-prior quiets (safe first version)
+constexpr int POLICY_LMR_MOVE_COUNT_MIN = 4; // only late moves
 
 inline int scaleNNUE(int raw_score) {
     return raw_score;
@@ -130,19 +136,17 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to(); // In Disservin's lib, to() is the rook's square!
+        chess::Square rook_from = move.to(); // Disservin: to() is rook square
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
 
-        // Use the library's built-in castling square calculators
         chess::Square king_to = chess::Square::castling_king_square(king_side, c);
         chess::Square rook_to = chess::Square::castling_rook_square(king_side, c);
 
         chess::Piece king_piece = chess::Piece(chess::PieceType::KING, c);
         chess::Piece rook_piece = chess::Piece(chess::PieceType::ROOK, c);
 
-        // Update accumulator directly without touching the board state
         accStack.current().remove_piece(king_piece, king_from);
         accStack.current().remove_piece(rook_piece, rook_from);
         accStack.current().add_piece(king_piece, king_to);
@@ -189,6 +193,44 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
                                 piece, move.to());
     }
     return h;
+}
+
+// ============================================================================
+// Policy prior helpers (once per alphaBeta node)
+// ============================================================================
+
+struct NodePolicyPrior {
+    bool active = false;
+    chess::Movelist moves;
+    float bonus[256]{};
+
+    int get(const chess::Move& m) const {
+        if (!active) return -1;
+        const int n = static_cast<int>(moves.size());
+        for (int i = 0; i < n; ++i) {
+            if (moves[i] == m) {
+                return static_cast<int>(bonus[i]);
+            }
+        }
+        return -1;
+    }
+};
+
+// Fill prior once: same gates as quiet ordering (depth / loaded / not check)
+static void fillNodePolicyPrior(const chess::Board& board, int depth, bool in_check,
+                                NodePolicyPrior& pp) {
+    pp.active = false;
+    if (!g_policy.loaded) return;
+    if (in_check) return;
+    if (depth < POLICY_MIN_DEPTH) return;
+
+    chess::movegen::legalmoves(pp.moves, board);
+    if (pp.moves.empty() || pp.moves.size() > 256) return;
+
+    std::memset(pp.bonus, 0, sizeof(pp.bonus));
+    if (g_policy.scoreQuietsForOrdering(board, pp.moves, pp.bonus)) {
+        pp.active = true;
+    }
 }
 
 SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int ply_from_root,
@@ -435,7 +477,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (!is_pv_node && !in_check && !in_singular_search
         && depth <= 7 && depth >= 1 && std::abs(beta) < MATE_SCORE - 100) {
         if (static_eval - rfp_margin >= beta)
-            return static_eval - rfp_margin; // or static_eval (soft) — pick one and stick to it
+            return static_eval - rfp_margin;
     }
 
     if (!is_pv_node && !in_check && !in_singular_search && depth <= 3) {
@@ -551,6 +593,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    // ------------------------------------------------------------------------
+    // Policy prior: once per node (for LMR). Same depth/check gates as ordering.
+    // MovePicker may also eval policy for quiet order — acceptable for first test.
+    // ------------------------------------------------------------------------
+    NodePolicyPrior node_policy;
+    fillNodePolicyPrior(board, depth, in_check, node_policy);
+
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
@@ -652,6 +701,25 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            // ---------------------------------------------------------------
+            // Policy-shaped LMR (conservative):
+            // - only late quiets
+            // - only if prior was computed this node
+            // - low policy bonus => reduce MORE by 1
+            // - do NOT reduce less on high prior yet (safer first SPRT)
+            // ---------------------------------------------------------------
+            if (node_policy.active &&
+                move_count >= POLICY_LMR_MOVE_COUNT_MIN &&
+                move != tt_move) {
+                const int pb = node_policy.get(move);
+                // pb in [0, POLICY_QUIET_WEIGHT] for quiets; 0 also for non-quiets
+                // only treat as low-prior if clearly in bottom third
+                if (pb >= 0 && pb <= (POLICY_QUIET_WEIGHT / 3)) {
+                    reduction += 1;
+                }
+            }
+            // ---------------------------------------------------------------
 
             reduction = std::clamp(reduction, 1, new_depth - 1);
 
@@ -927,7 +995,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
 
-        // FIX: Store the root node evaluation in the TT!
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
         auto depth_end = std::chrono::high_resolution_clock::now();
