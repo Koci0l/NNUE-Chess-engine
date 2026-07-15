@@ -24,7 +24,7 @@ constexpr int POLICY_SEE_TH      = -108;
 constexpr int POLICY_QUIET_WEIGHT = 1024;
 
 // Only run policy in move picker at this depth and above (huge NPS win)
-constexpr int POLICY_MIN_DEPTH = 5;
+constexpr int POLICY_MIN_DEPTH = 6;
 
 struct PolicyNet {
     bool loaded = false;
