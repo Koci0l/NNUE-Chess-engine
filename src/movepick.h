@@ -40,8 +40,9 @@ enum class QMovePickStage {
 
 class MovePicker {
 public:
+    // use_policy: only true at root (root-only policy experiment)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-               int depth, bool skip_quiets = false);
+               int depth, bool skip_quiets = false, bool use_policy = false);
 
     chess::Move next(bool& is_quiet_out);
     int last_score() const { return m_last_score; }
@@ -62,6 +63,7 @@ private:
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
+    bool m_use_policy;
 
     MovePickStage m_stage;
 
@@ -88,7 +90,6 @@ private:
     chess::Movelist m_all_legal;
     bool m_legal_generated;
 
-    // Policy cache for this node (aligned with m_all_legal indices)
     float m_policy_bonus[256];
     bool  m_policy_ready;
 };

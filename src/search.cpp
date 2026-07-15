@@ -130,19 +130,17 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to(); // In Disservin's lib, to() is the rook's square!
+        chess::Square rook_from = move.to(); // Disservin: to() is rook square
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
 
-        // Use the library's built-in castling square calculators
         chess::Square king_to = chess::Square::castling_king_square(king_side, c);
         chess::Square rook_to = chess::Square::castling_rook_square(king_side, c);
 
         chess::Piece king_piece = chess::Piece(chess::PieceType::KING, c);
         chess::Piece rook_piece = chess::Piece(chess::PieceType::ROOK, c);
 
-        // Update accumulator directly without touching the board state
         accStack.current().remove_piece(king_piece, king_from);
         accStack.current().remove_piece(rook_piece, rook_from);
         accStack.current().add_piece(king_piece, king_to);
@@ -435,7 +433,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (!is_pv_node && !in_check && !in_singular_search
         && depth <= 7 && depth >= 1 && std::abs(beta) < MATE_SCORE - 100) {
         if (static_eval - rfp_margin >= beta)
-            return static_eval - rfp_margin; // or static_eval (soft) — pick one and stick to it
+            return static_eval - rfp_margin;
     }
 
     if (!is_pv_node && !in_check && !in_singular_search && depth <= 3) {
@@ -555,7 +553,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    MovePicker mp(board, mpCtx, depth, false);
+    // Interior: never use policy (root-only experiment)
+    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -861,7 +860,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
-            MovePicker rootPicker(board, rootCtx, depth, false);
+            // ROOT-ONLY POLICY: one forward pass per root move generation
+            MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/true);
             int root_move_count = 0;
 
             while (true) {
@@ -927,7 +927,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
 
-        // FIX: Store the root node evaluation in the TT!
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
         auto depth_end = std::chrono::high_resolution_clock::now();
@@ -955,11 +954,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         }
 
         if (!g_silent)
-        std::cout 
-        << "info score " << score_str 
-        << " depth " << depth 
-        << " nodes " << stats.nodes 
-        << " nps " << nps << " time " 
+        std::cout
+        << "info score " << score_str
+        << " depth " << depth
+        << " nodes " << stats.nodes
+        << " nps " << nps << " time "
         << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);

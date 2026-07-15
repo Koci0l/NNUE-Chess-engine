@@ -13,16 +13,6 @@
 PolicyNet g_policy;
 
 // ============================================================================
-// OVERHEAD A/B SWITCH
-//   1 = run full policy forward pass, but force all quiet bonuses to 0
-//       (ordering identical to no-policy; measures pure cost)
-//   0 = normal behaviour
-// ============================================================================
-#ifndef POLICY_OVERHEAD_TEST
-#define POLICY_OVERHEAD_TEST 1
-#endif
-
-// ============================================================================
 // Bit helpers
 // ============================================================================
 
@@ -213,9 +203,6 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " bytes=" << size
               << " min_depth=" << POLICY_MIN_DEPTH
               << " weight=" << POLICY_QUIET_WEIGHT
-#if POLICY_OVERHEAD_TEST
-              << " OVERHEAD_TEST=1 (full forward, zero bonus)"
-#endif
               << std::endl;
     return true;
 }
@@ -559,10 +546,6 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
         return true;
     }
 
-    // ------------------------------------------------------------------
-    // Full cost path (features + hidden + logits) — always run when we
-    // get here so OVERHEAD_TEST measures real policy time.
-    // ------------------------------------------------------------------
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
     collectFeatures(board, feats, nfeats);
@@ -586,18 +569,6 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
         hi = std::max(hi, logit);
     }
 
-#if POLICY_OVERHEAD_TEST
-    // Pay full forward cost above, then discard the signal entirely.
-    // Quiet ordering falls back to history/killers only — identical to
-    // "policy off" for search quality, but NPS reflects the cost.
-    for (int q = 0; q < nq; ++q) {
-        out_bonus[quiet_idx[q]] = 0.f;
-    }
-    // Prevent the compiler from DCE'ing the work above.
-    volatile float sink = lo + hi + logits[0];
-    (void)sink;
-    return true;
-#else
     const float span = std::max(1e-3f, hi - lo);
     const float scale = float(POLICY_QUIET_WEIGHT) / span;
 
@@ -606,7 +577,6 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
     }
 
     return true;
-#endif
 }
 
 // ============================================================================
@@ -644,9 +614,6 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << " l1_out_major=" << (l1_out_major ? 1 : 0)
               << " min_depth=" << POLICY_MIN_DEPTH
               << " weight=" << POLICY_QUIET_WEIGHT
-#if POLICY_OVERHEAD_TEST
-              << " OVERHEAD_TEST=1"
-#endif
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";

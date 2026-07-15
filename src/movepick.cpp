@@ -11,8 +11,9 @@
 // ============================================================================
 
 MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-                       int depth, bool skip_quiets)
+                       int depth, bool skip_quiets, bool use_policy)
     : m_board(board), m_ctx(ctx), m_depth(depth), m_skip_quiets(skip_quiets),
+      m_use_policy(use_policy),
       m_stage(MovePickStage::TT_MOVE),
       m_capture_count(0), m_capture_idx(0),
       m_bad_capture_count(0), m_bad_capture_idx(0),
@@ -52,14 +53,14 @@ void MovePicker::ensurePolicy() {
     m_policy_ready = true;
     std::memset(m_policy_bonus, 0, sizeof(m_policy_bonus));
 
+    // Root-only: interior AB never sets m_use_policy.
+    if (!m_use_policy) {
+        return;
+    }
     if (!g_policy.loaded) {
         return;
     }
     if (m_skip_quiets) {
-        return;
-    }
-    // Depth gate: skip most nodes (huge NPS recovery under TC)
-    if (m_depth < POLICY_MIN_DEPTH) {
         return;
     }
 
@@ -68,7 +69,6 @@ void MovePicker::ensurePolicy() {
         return;
     }
 
-    // Fast path: quiets only, no softmax
     g_policy.scoreQuietsForOrdering(m_board, m_all_legal, m_policy_bonus);
 }
 
@@ -155,9 +155,8 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // Policy only reshuffles quiets; TT/killers/captures untouched.
-    // Depth-gated inside ensurePolicy().
-    if (g_policy.loaded && m_depth >= POLICY_MIN_DEPTH) {
+    // Root-only policy blend into quiet history score
+    if (m_use_policy && g_policy.loaded) {
         ensurePolicy();
         const float b = policyBonusFor(m_all_legal, m_policy_bonus, move);
         score += static_cast<int>(b);
@@ -193,8 +192,7 @@ void MovePicker::scoreCaptures() {
 void MovePicker::scoreQuiets() {
     ensureLegal();
 
-    // Compute policy once before scoring quiets (if depth allows)
-    if (g_policy.loaded && m_depth >= POLICY_MIN_DEPTH && !m_skip_quiets) {
+    if (m_use_policy && g_policy.loaded && !m_skip_quiets) {
         ensurePolicy();
     }
 
@@ -401,7 +399,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker  (unchanged — no policy)
+// QSearchMovePicker  (no policy)
 // ============================================================================
 
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)
