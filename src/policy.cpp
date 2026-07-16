@@ -110,6 +110,16 @@ static inline float crelu01(float x) {
 }
 
 // ============================================================================
+// A/B: force castle SEE half (for debugging policymove e1c1)
+//   -1 = auto (Monty-style king-destination SEE)
+//    0 = force good_see=false  -> index in [0, from_to)
+//    1 = force good_see=true   -> index in [from_to, 2*from_to)
+// ============================================================================
+#ifndef POLICY_CASTLE_SEE_FORCE
+#define POLICY_CASTLE_SEE_FORCE -1
+#endif
+
+// ============================================================================
 // PolicyNet
 // ============================================================================
 
@@ -351,7 +361,7 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
 }
 
 // ============================================================================
-// Move index
+// Move index  (Monty inputs.rs map_move_to_index)
 // ============================================================================
 
 int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) const {
@@ -379,6 +389,7 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
 
     bool king_side = false;
     if (is_castle) {
+        // Disservin: m.to() is rook square. Monty / policy geometry: king destination.
         king_side = (m.to() > m.from());
         const chess::Color c = moved.color();
         to_b = chess::Square::castling_king_square(king_side, c).index();
@@ -403,12 +414,15 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
 
         idx = offsets[5][64] + (POLICY_PROMOS / 4) * promo_pc + promo_id;
     } else if (is_castle) {
+        // Monty: OFFSETS[5][64] + PROMOS + (is_ks ^ is_hm)
+        // is_hm = 1 when hm==0 (king on files a-d after flip convention)
         const int is_ks = king_side ? 1 : 0;
         const int is_hm = (hm == 0) ? 1 : 0;
         idx = offsets[5][64] + POLICY_PROMOS + (is_ks ^ is_hm);
     } else if (is_dbl) {
         idx = offsets[5][64] + POLICY_PROMOS + 2 + (src % 8);
     } else {
+        // PieceType: PAWN=0 .. KING=5 must match Monty pc = get_pc - 2
         const int pc = static_cast<int>(moved.type());
         if (pc < 0 || pc > 5) {
             return -1;
@@ -418,7 +432,33 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
         idx = offsets[pc][src] + popcount64(below);
     }
 
-    const bool good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+    // -------------------------------------------------------------------------
+    // SEE split (FROM_TO * good_see + idx)
+    //
+    // Monty trains on montyformat moves: castling has to = king destination.
+    // Disservin CASTLING has to = rook square; see_ge(board, castle_move) is
+    // NOT the same predicate. Probe a normal king walk e1->c1 / e1->g1 instead.
+    // -------------------------------------------------------------------------
+    bool good_see = false;
+
+#if POLICY_CASTLE_SEE_FORCE >= 0
+    if (is_castle) {
+        good_see = (POLICY_CASTLE_SEE_FORCE != 0);
+    } else
+#endif
+    if (is_castle) {
+#if POLICY_CASTLE_SEE_FORCE < 0
+        // Auto: Monty-style — SEE as if king moved to king destination (quiet).
+        // chess-library: Move::make(from, to) builds a NORMAL move.
+        const chess::Square from_sq = m.from();
+        const chess::Square to_sq(static_cast<chess::Square::underlying>(to_b));
+        const chess::Move king_walk = chess::Move::make(from_sq, to_sq);
+        good_see = chess::see::see_ge(board, king_walk, POLICY_SEE_TH);
+#endif
+    } else {
+        good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+    }
+
     const int index = from_to * static_cast<int>(good_see) + idx;
 
     if (index < 0 || index >= num_moves) {
@@ -537,6 +577,7 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
         const chess::Move& m = moves[i];
         const bool cap = board.at(m.to()) != chess::Piece::NONE ||
                          m.typeOf() == chess::Move::ENPASSANT;
+        // Castling is a quiet for ordering purposes (not a capture/promo)
         const bool promo = m.typeOf() == chess::Move::PROMOTION;
         if (cap || promo) continue;
         if (nq < 256) quiet_idx[nq++] = i;
@@ -660,7 +701,16 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
         const int i = order[r];
         const chess::Move& m = moves[i];
         const int mi = mapMoveToIndex(board, m);
-        const bool good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+        // Display SEE consistently with mapMoveToIndex
+        bool good_see = false;
+        if (m.typeOf() == chess::Move::CASTLING) {
+            const bool ks = m.to() > m.from();
+            const int kto = chess::Square::castling_king_square(ks, board.at(m.from()).color()).index();
+            const chess::Move kw = chess::Move::make(m.from(), chess::Square(static_cast<chess::Square::underlying>(kto)));
+            good_see = chess::see::see_ge(board, kw, POLICY_SEE_TH);
+        } else {
+            good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+        }
 
         char buf[160];
         std::snprintf(buf, sizeof(buf),
@@ -694,7 +744,17 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
     }
 
     const int mi = mapMoveToIndex(board, m);
-    const bool good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+
+    bool good_see = false;
+    if (m.typeOf() == chess::Move::CASTLING) {
+        const bool ks = m.to() > m.from();
+        const int kto = chess::Square::castling_king_square(ks, board.at(m.from()).color()).index();
+        const chess::Move kw = chess::Move::make(
+            m.from(), chess::Square(static_cast<chess::Square::underlying>(kto)));
+        good_see = chess::see::see_ge(board, kw, POLICY_SEE_TH);
+    } else {
+        good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
+    }
 
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
@@ -722,6 +782,24 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
             if (probs[i] > prob) ++better;
         }
         rank = better + 1;
+    }
+
+    // Also print both SEE halves' raw channel indices for castling A/B
+    if (m.typeOf() == chess::Move::CASTLING) {
+        const int base = mi % from_to; // idx without SEE half (approx if mi valid)
+        // Recompute idx only (same as map without SEE)
+        const int ksq = stmKingIndex(board);
+        const int hm  = ((ksq % 8) > 3) ? 7 : 0;
+        const bool ks = m.to() > m.from();
+        const int is_ks = ks ? 1 : 0;
+        const int is_hm = (hm == 0) ? 1 : 0;
+        const int cidx = offsets[5][64] + POLICY_PROMOS + (is_ks ^ is_hm);
+        std::cout << "info string castle_channels idx0=" << cidx
+                  << " idx1=" << (cidx + from_to)
+                  << " chosen=" << mi
+                  << " see=" << (good_see ? 1 : 0)
+                  << std::endl;
+        (void)base;
     }
 
     std::cout << "info string move " << chess::uci::moveToUci(m)
