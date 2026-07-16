@@ -659,7 +659,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                               ply_from_root + 1, thread, tm, stats, true, move, ss);
 
-            if (eval > alpha && reduction > 1) {
+            if (eval > alpha && reduction > 0) {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
             }
