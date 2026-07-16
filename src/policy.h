@@ -1,3 +1,6 @@
+// ============================================================================
+// policy.h
+// ============================================================================
 #pragma once
 
 #include "chess.hpp"
@@ -20,10 +23,20 @@ constexpr int POLICY_QA          = 128;
 constexpr int POLICY_PROMOS      = 4 * 22;           // 88
 constexpr int POLICY_SEE_TH      = -108;
 
-// Quiet ordering blend: bonus in [0, POLICY_QUIET_WEIGHT]
-constexpr int POLICY_QUIET_WEIGHT = 2048;
+// Quiet ordering blend: bonus in [0, POLICY_QUIET_WEIGHT] for KEPT quiets only.
+// Full-span W sweep: only ~1024 helped nodes; 512/2048 did not.
+constexpr int POLICY_QUIET_WEIGHT = 1024;
+
+// Sparsity (root quiet ordering):
+//   POLICY_TOP_K > 0  → keep only top K quiets by logit (overrides percent)
+//   else              → keep top POLICY_KEEP_PERCENT % (ceil, at least 1)
+//   POLICY_KEEP_PERCENT = 100 → old full-span behaviour
+//   POLICY_KEEP_PERCENT = 50  → cut bottom half (recommended default)
+constexpr int POLICY_TOP_K         = 0;
+constexpr int POLICY_KEEP_PERCENT  = 50;
 
 // Only run policy in move picker at this depth and above (huge NPS win)
+// (root search currently gates via use_policy flag; kept for reference)
 constexpr int POLICY_MIN_DEPTH = 6;
 
 struct PolicyNet {
@@ -60,8 +73,9 @@ struct PolicyNet {
                           float* out_logits) const;
 
     // Fast AB path: quiets only, no softmax.
-    // out_bonus[i] aligned with moves[]; 0 for captures/promos;
-    // for quiets in [0, POLICY_QUIET_WEIGHT] by logit rank span.
+    // out_bonus[i] aligned with moves[]; 0 for captures/promos and for
+    // quiets below the keep threshold; kept quiets in [0, POLICY_QUIET_WEIGHT]
+    // by logit span among the kept set only.
     bool scoreQuietsForOrdering(const chess::Board& board,
                                 const chess::Movelist& moves,
                                 float* out_bonus) const;

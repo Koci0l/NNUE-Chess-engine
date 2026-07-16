@@ -1,3 +1,6 @@
+// ============================================================================
+// policy.cpp
+// ============================================================================
 #include "policy.h"
 #include "policy_embed.h"
 #include "see.h"
@@ -213,6 +216,8 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " bytes=" << size
               << " min_depth=" << POLICY_MIN_DEPTH
               << " weight=" << POLICY_QUIET_WEIGHT
+              << " top_k=" << POLICY_TOP_K
+              << " keep_pct=" << POLICY_KEEP_PERCENT
               << std::endl;
     return true;
 }
@@ -415,14 +420,12 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
         idx = offsets[5][64] + (POLICY_PROMOS / 4) * promo_pc + promo_id;
     } else if (is_castle) {
         // Monty: OFFSETS[5][64] + PROMOS + (is_ks ^ is_hm)
-        // is_hm = 1 when hm==0 (king on files a-d after flip convention)
         const int is_ks = king_side ? 1 : 0;
         const int is_hm = (hm == 0) ? 1 : 0;
         idx = offsets[5][64] + POLICY_PROMOS + (is_ks ^ is_hm);
     } else if (is_dbl) {
         idx = offsets[5][64] + POLICY_PROMOS + 2 + (src % 8);
     } else {
-        // PieceType: PAWN=0 .. KING=5 must match Monty pc = get_pc - 2
         const int pc = static_cast<int>(moved.type());
         if (pc < 0 || pc > 5) {
             return -1;
@@ -432,13 +435,6 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
         idx = offsets[pc][src] + popcount64(below);
     }
 
-    // -------------------------------------------------------------------------
-    // SEE split (FROM_TO * good_see + idx)
-    //
-    // Monty trains on montyformat moves: castling has to = king destination.
-    // Disservin CASTLING has to = rook square; see_ge(board, castle_move) is
-    // NOT the same predicate. Probe a normal king walk e1->c1 / e1->g1 instead.
-    // -------------------------------------------------------------------------
     bool good_see = false;
 
 #if POLICY_CASTLE_SEE_FORCE >= 0
@@ -448,8 +444,6 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
 #endif
     if (is_castle) {
 #if POLICY_CASTLE_SEE_FORCE < 0
-        // Auto: Monty-style — SEE as if king moved to king destination (quiet).
-        // chess-library: Move::make(from, to) builds a NORMAL move.
         const chess::Square from_sq = m.from();
         const chess::Square to_sq(static_cast<chess::Square::underlying>(to_b));
         const chess::Move king_walk = chess::Move::make(from_sq, to_sq);
@@ -558,7 +552,8 @@ bool PolicyNet::scoreLegalMoves(const chess::Board& board,
     return true;
 }
 
-// Fast path for AB: quiets only, linear map, no softmax / no exp
+// Fast path for AB: quiets only, linear map on KEPT set, no softmax / no exp.
+// Bottom half (or outside top-K) gets bonus 0 → pure history.
 bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
                                        const chess::Movelist& moves,
                                        float* out_bonus) const {
@@ -572,13 +567,15 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
     }
 
     int quiet_idx[256];
+    float logits[256];
     int nq = 0;
+
     for (int i = 0; i < n; ++i) {
         const chess::Move& m = moves[i];
         const bool cap = board.at(m.to()) != chess::Piece::NONE ||
                          m.typeOf() == chess::Move::ENPASSANT;
-        // Castling is a quiet for ordering purposes (not a capture/promo)
         const bool promo = m.typeOf() == chess::Move::PROMOTION;
+        // Castling is a quiet for ordering purposes (not a capture/promo)
         if (cap || promo) continue;
         if (nq < 256) quiet_idx[nq++] = i;
     }
@@ -594,10 +591,6 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
     float h1[POLICY_HL_PAIR];
     computeHidden(*this, feats, nfeats, h1);
 
-    float logits[256];
-    float lo = 1e9f;
-    float hi = -1e9f;
-
     for (int q = 0; q < nq; ++q) {
         const int i = quiet_idx[q];
         const int mi = mapMoveToIndex(board, moves[i]);
@@ -606,16 +599,50 @@ bool PolicyNet::scoreQuietsForOrdering(const chess::Board& board,
             logit = logitForMoveIndex(*this, h1, mi);
         }
         logits[q] = logit;
-        lo = std::min(lo, logit);
-        hi = std::max(hi, logit);
     }
 
+    // Rank quiets by logit (desc)
+    struct QRef {
+        int q;       // index into quiet_idx / logits
+        float logit;
+    };
+    QRef order[256];
+    for (int q = 0; q < nq; ++q) {
+        order[q] = {q, logits[q]};
+    }
+    std::sort(order, order + nq, [](const QRef& a, const QRef& b) {
+        return a.logit > b.logit;
+    });
+
+    // How many to keep
+    int keep = nq;
+    if (POLICY_TOP_K > 0) {
+        keep = std::min(POLICY_TOP_K, nq);
+    } else if (POLICY_KEEP_PERCENT > 0 && POLICY_KEEP_PERCENT < 100) {
+        // ceil(nq * pct / 100), at least 1
+        keep = std::max(1, (nq * POLICY_KEEP_PERCENT + 99) / 100);
+        keep = std::min(keep, nq);
+    } else {
+        // 100% or disabled percent → full span (legacy)
+        keep = nq;
+    }
+
+    if (keep <= 0) {
+        return true;
+    }
+
+    // Span among KEPT quiets only → bottom half never enters [0,W]
+    const float hi = order[0].logit;
+    const float lo = order[keep - 1].logit;
     const float span = std::max(1e-3f, hi - lo);
     const float scale = float(POLICY_QUIET_WEIGHT) / span;
 
-    for (int q = 0; q < nq; ++q) {
-        out_bonus[quiet_idx[q]] = (logits[q] - lo) * scale;
+    for (int r = 0; r < keep; ++r) {
+        const int q = order[r].q;
+        const int i = quiet_idx[q];
+        out_bonus[i] = (order[r].logit - lo) * scale; // [0, W] on kept set
     }
+    // r >= keep: left at 0 (history only)
 
     return true;
 }
@@ -655,6 +682,8 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << " l1_out_major=" << (l1_out_major ? 1 : 0)
               << " min_depth=" << POLICY_MIN_DEPTH
               << " weight=" << POLICY_QUIET_WEIGHT
+              << " top_k=" << POLICY_TOP_K
+              << " keep_pct=" << POLICY_KEEP_PERCENT
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";
@@ -688,6 +717,10 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
     const float inv = (sum > 0.f) ? (1.f / sum) : 0.f;
     for (size_t i = 0; i < probs.size(); ++i) probs[i] *= inv;
 
+    // Quiet ordering bonuses (same path as root picker)
+    std::vector<float> quiet_bonus(moves.size(), 0.f);
+    scoreQuietsForOrdering(board, moves, quiet_bonus.data());
+
     std::vector<int> order(moves.size());
     for (size_t i = 0; i < moves.size(); ++i) order[i] = static_cast<int>(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) {
@@ -695,13 +728,12 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
     });
 
     const int nshow = std::min(topN, static_cast<int>(moves.size()));
-    std::cout << "info string rank  move     idx   see  logit      prob" << std::endl;
+    std::cout << "info string rank  move     idx   see  logit      prob    qbonus" << std::endl;
 
     for (int r = 0; r < nshow; ++r) {
         const int i = order[r];
         const chess::Move& m = moves[i];
         const int mi = mapMoveToIndex(board, m);
-        // Display SEE consistently with mapMoveToIndex
         bool good_see = false;
         if (m.typeOf() == chess::Move::CASTLING) {
             const bool ks = m.to() > m.from();
@@ -712,15 +744,16 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
             good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
         }
 
-        char buf[160];
+        char buf[192];
         std::snprintf(buf, sizeof(buf),
-                      "info string #%02d  %-6s  %5d  %s  %+9.4f  %6.2f%%",
+                      "info string #%02d  %-6s  %5d  %s  %+9.4f  %6.2f%%  %7.1f",
                       r + 1,
                       chess::uci::moveToUci(m).c_str(),
                       mi,
                       good_see ? "Y" : "N",
                       logits[i],
-                      probs[i] * 100.f);
+                      probs[i] * 100.f,
+                      quiet_bonus[i]);
         std::cout << buf << std::endl;
     }
 
@@ -762,17 +795,21 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
     float logit = -1e9f;
     float prob  = 0.f;
     int   rank  = -1;
+    float qbonus = 0.f;
 
     if (!moves.empty()) {
         std::vector<float> logits(moves.size(), 0.f);
         std::vector<float> probs(moves.size(), 0.f);
+        std::vector<float> qb(moves.size(), 0.f);
         logitsLegalMoves(board, moves, logits.data());
         scoreLegalMoves(board, moves, probs.data());
+        scoreQuietsForOrdering(board, moves, qb.data());
 
         for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
             if (moves[i] == m) {
                 logit = logits[i];
                 prob  = probs[i];
+                qbonus = qb[i];
                 break;
             }
         }
@@ -784,10 +821,7 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
         rank = better + 1;
     }
 
-    // Also print both SEE halves' raw channel indices for castling A/B
     if (m.typeOf() == chess::Move::CASTLING) {
-        const int base = mi % from_to; // idx without SEE half (approx if mi valid)
-        // Recompute idx only (same as map without SEE)
         const int ksq = stmKingIndex(board);
         const int hm  = ((ksq % 8) > 3) ? 7 : 0;
         const bool ks = m.to() > m.from();
@@ -799,7 +833,6 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
                   << " chosen=" << mi
                   << " see=" << (good_see ? 1 : 0)
                   << std::endl;
-        (void)base;
     }
 
     std::cout << "info string move " << chess::uci::moveToUci(m)
@@ -807,6 +840,7 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
               << " see=" << (good_see ? 1 : 0)
               << " logit=" << logit
               << " prob=" << (prob * 100.f) << "%"
+              << " qbonus=" << qbonus
               << " rank=" << rank
               << "/" << moves.size()
               << std::endl;
