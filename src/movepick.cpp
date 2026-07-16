@@ -1,7 +1,7 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
-#include "policy.h"
+// NOTE: no policy.h — Path A does not use policy in the picker
 
 #include <algorithm>
 #include <cstring>
@@ -11,19 +11,17 @@
 // ============================================================================
 
 MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-                       int depth, bool skip_quiets, bool use_policy)
+                       int depth, bool skip_quiets, bool /*use_policy_unused*/)
     : m_board(board), m_ctx(ctx), m_depth(depth), m_skip_quiets(skip_quiets),
-      m_use_policy(use_policy),
       m_stage(MovePickStage::TT_MOVE),
       m_capture_count(0), m_capture_idx(0),
       m_bad_capture_count(0), m_bad_capture_idx(0),
       m_quiet_count(0), m_quiet_idx(0),
       m_last_score(0), m_returned_count(0),
-      m_legal_generated(false),
-      m_policy_ready(false) {
+      m_legal_generated(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
-    std::memset(m_policy_bonus, 0, sizeof(m_policy_bonus));
+    (void)m_depth;
 }
 
 bool MovePicker::wasReturned(const chess::Move& move) const {
@@ -44,32 +42,6 @@ void MovePicker::ensureLegal() {
         chess::movegen::legalmoves(m_all_legal, m_board);
         m_legal_generated = true;
     }
-}
-
-void MovePicker::ensurePolicy() {
-    if (m_policy_ready) {
-        return;
-    }
-    m_policy_ready = true;
-    std::memset(m_policy_bonus, 0, sizeof(m_policy_bonus));
-
-    // Root-only: interior AB never sets m_use_policy.
-    if (!m_use_policy) {
-        return;
-    }
-    if (!g_policy.loaded) {
-        return;
-    }
-    if (m_skip_quiets) {
-        return;
-    }
-
-    ensureLegal();
-    if (m_all_legal.empty() || m_all_legal.size() > 256) {
-        return;
-    }
-
-    g_policy.scoreQuietsForOrdering(m_board, m_all_legal, m_policy_bonus);
 }
 
 bool MovePicker::isValid(const chess::Move& move) const {
@@ -114,18 +86,6 @@ int MovePicker::scoreOneCapture(const chess::Move& move) {
     return score;
 }
 
-static float policyBonusFor(const chess::Movelist& legal,
-                            const float* bonus,
-                            const chess::Move& m) {
-    const int n = static_cast<int>(legal.size());
-    for (int i = 0; i < n; ++i) {
-        if (legal[i] == m) {
-            return bonus[i];
-        }
-    }
-    return 0.f;
-}
-
 int MovePicker::scoreOneQuiet(const chess::Move& move) {
     chess::Piece piece = m_board.at(move.from());
     int hist = g_butterflyHistory.get(m_ctx.side_to_move, move.from(), move.to());
@@ -153,16 +113,8 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
-    int score = hist + cont1 + cont2;
-
-    // Root-only policy blend into quiet history score
-    if (m_use_policy && g_policy.loaded) {
-        ensurePolicy();
-        const float b = policyBonusFor(m_all_legal, m_policy_bonus, move);
-        score += static_cast<int>(b);
-    }
-
-    return score;
+    // Path A: pure history — no policy bonus
+    return hist + cont1 + cont2;
 }
 
 void MovePicker::scoreCaptures() {
@@ -191,10 +143,6 @@ void MovePicker::scoreCaptures() {
 
 void MovePicker::scoreQuiets() {
     ensureLegal();
-
-    if (m_use_policy && g_policy.loaded && !m_skip_quiets) {
-        ensurePolicy();
-    }
 
     m_quiet_count = 0;
     m_quiet_idx = 0;
