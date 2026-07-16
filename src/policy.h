@@ -21,7 +21,7 @@ constexpr int POLICY_PROMOS      = 4 * 22;           // 88
 constexpr int POLICY_SEE_TH      = -108;
 
 // Quiet ordering blend: bonus in [0, POLICY_QUIET_WEIGHT]
-constexpr int POLICY_QUIET_WEIGHT = 1024;
+constexpr int POLICY_QUIET_WEIGHT = 512;
 
 // Only run policy in move picker at this depth and above (huge NPS win)
 constexpr int POLICY_MIN_DEPTH = 6;
