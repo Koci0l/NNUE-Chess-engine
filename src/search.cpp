@@ -4,6 +4,8 @@
 #include "movepick.h"
 #include "see.h"
 #include "zobrist.h"
+#include "policy.h"
+
 #include <iostream>
 #include <cmath>
 #include <algorithm>
@@ -130,19 +132,17 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to(); // In Disservin's lib, to() is the rook's square!
+        chess::Square rook_from = move.to(); // Disservin: to() is rook square
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
 
-        // Use the library's built-in castling square calculators
         chess::Square king_to = chess::Square::castling_king_square(king_side, c);
         chess::Square rook_to = chess::Square::castling_rook_square(king_side, c);
 
         chess::Piece king_piece = chess::Piece(chess::PieceType::KING, c);
         chess::Piece rook_piece = chess::Piece(chess::PieceType::ROOK, c);
 
-        // Update accumulator directly without touching the board state
         accStack.current().remove_piece(king_piece, king_from);
         accStack.current().remove_piece(rook_piece, rook_from);
         accStack.current().add_piece(king_piece, king_to);
@@ -435,7 +435,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (!is_pv_node && !in_check && !in_singular_search
         && depth <= 7 && depth >= 1 && std::abs(beta) < MATE_SCORE - 100) {
         if (static_eval - rfp_margin >= beta)
-            return static_eval - rfp_margin; // or static_eval (soft) — pick one and stick to it
+            return static_eval - rfp_margin;
     }
 
     if (!is_pv_node && !in_check && !in_singular_search && depth <= 3) {
@@ -555,7 +555,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    MovePicker mp(board, mpCtx, depth, false);
+    // Path A: never reorder with policy in the tree
+    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -861,7 +862,35 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
-            MovePicker rootPicker(board, rootCtx, depth, false);
+            // Path A: history/TT ordering only — no policy sort
+            MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/false);
+
+            // One policy pass per root iteration: quiet ranks for LMR
+            chess::Movelist root_legals;
+            chess::movegen::legalmoves(root_legals, board);
+
+            int policy_rank[256];
+            int policy_nq = 0;
+            for (int i = 0; i < 256; ++i) policy_rank[i] = -1;
+
+            const bool use_policy_lmr =
+                g_policy.loaded &&
+                depth >= POLICY_ROOT_LMR_MIN_DEPTH &&
+                root_legals.size() > 1 &&
+                static_cast<int>(root_legals.size()) <= 256;
+
+            if (use_policy_lmr) {
+                g_policy.rankLegalQuiets(board, root_legals, policy_rank, &policy_nq);
+            }
+
+            auto findPolicyRank = [&](const chess::Move& m) -> int {
+                if (!use_policy_lmr || policy_nq <= 0) return -1;
+                for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
+                    if (root_legals[i] == m) return policy_rank[i];
+                }
+                return -1;
+            };
+
             int root_move_count = 0;
 
             while (true) {
@@ -881,16 +910,53 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                 int eval;
                 bool is_draw_move = isDrawByRepetition(board) || isDrawByFiftyMove(board);
+
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
+                    // Full window first move — no LMR
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
                 } else {
-                    eval = -alphaBeta(board, depth - 1, -alpha - 1, -alpha, 1,
+                    int new_depth = depth - 1;
+                    int reduction = 0;
+
+                    // Path A: root LMR modulated by policy quiet rank
+                    if (use_policy_lmr &&
+                        root_is_quiet &&
+                        new_depth >= 1 &&
+                        depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
+
+                        reduction = lmr_reductions[std::min(depth, 63)]
+                                                   [std::min(root_move_count, 63)];
+
+                        const int pr = findPolicyRank(move);
+                        if (pr >= 0) {
+                            // Top policy quiets: less reduction
+                            if (pr < POLICY_ROOT_LMR_TOP) {
+                                reduction = std::max(0, reduction - 1);
+                            }
+                            // Bottom half of quiets: extra reduction
+                            if (policy_nq >= 4 && pr >= (policy_nq / 2)) {
+                                reduction += 1;
+                            }
+                        }
+
+                        reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
+                    }
+
+                    // PVS null window (possibly reduced)
+                    eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
+
+                    // Re-search full depth if reduced search beats alpha
+                    if (eval > alpha && reduction > 0) {
+                        eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
+                                          thread, &tm, stats, true, move, ss);
+                    }
+                    // Full window re-search
                     if (eval > alpha && eval < beta) {
-                        eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
+                        eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
                                           thread, &tm, stats, true, move, ss);
                     }
                 }
@@ -927,7 +993,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
 
-        // FIX: Store the root node evaluation in the TT!
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
         auto depth_end = std::chrono::high_resolution_clock::now();
@@ -955,12 +1020,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         }
 
         if (!g_silent)
-        std::cout 
-        << "info score " << score_str 
-        << " depth " << depth 
-        << " nodes " << stats.nodes 
-        << " nps " << nps << " time " 
-        << elapsed << " pv " << pv_str << "\n";
+            std::cout
+                << "info score " << score_str
+                << " depth " << depth
+                << " nodes " << stats.nodes
+                << " nps " << nps << " time "
+                << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);
     }

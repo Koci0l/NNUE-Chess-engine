@@ -1,15 +1,17 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
+// NOTE: no policy.h — Path A does not use policy in the picker
 
 #include <algorithm>
+#include <cstring>
 
 // ============================================================================
 // MovePicker
 // ============================================================================
 
 MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-                       int depth, bool skip_quiets)
+                       int depth, bool skip_quiets, bool /*use_policy_unused*/)
     : m_board(board), m_ctx(ctx), m_depth(depth), m_skip_quiets(skip_quiets),
       m_stage(MovePickStage::TT_MOVE),
       m_capture_count(0), m_capture_idx(0),
@@ -19,6 +21,7 @@ MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
       m_legal_generated(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
+    (void)m_depth;
 }
 
 bool MovePicker::wasReturned(const chess::Move& move) const {
@@ -110,6 +113,7 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
+    // Path A: pure history — no policy bonus
     return hist + cont1 + cont2;
 }
 
@@ -343,7 +347,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker
+// QSearchMovePicker  (no policy)
 // ============================================================================
 
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)

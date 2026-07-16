@@ -4,14 +4,25 @@
 #include "history.h"
 #include "zobrist.h"
 #include "nnue.h"
+#include "policy.h"
+#include "policy_embed.h"
+#include "policy_diag.h"
+
 #include <iostream>
 #include <sstream>
 #include <vector>
 #include <string>
 #include <chrono>
+#include <cctype>
+#include <algorithm>
+#include <fstream>
 
 #ifndef EVALFILE
 #define EVALFILE "768-1024x2-1-8.bin"
+#endif
+
+#ifndef POLICYFILE
+#define POLICYFILE "quantised.bin"
 #endif
 
 static const int BENCH_DEPTH = 12;
@@ -86,6 +97,9 @@ static void run_bench(ThreadInfo& thread) {
     uint64_t nps = (total_nodes * 1000) / elapsed_ms;
 
     std::cout << total_nodes << " nodes " << nps << " nps" << std::endl;
+    std::cout << "info string policy_status "
+              << (g_policy.loaded ? "LOADED" : "MISSING")
+              << std::endl;
     std::cout.flush();
 }
 
@@ -103,7 +117,7 @@ static bool is_integer(const std::string& s) {
 static bool process_command(const std::string& line, chess::Board& board, ThreadInfo& thread) {
         auto tokens = split(line, ' ');
         if (tokens.empty()) return true;
-        
+
         std::string command = tokens[0];
 
         if (command == "uci") {
@@ -112,6 +126,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
             std::cout << "option name Threads type spin default 1 min 1 max 1" << std::endl;
             std::cout << "option name EvalFile type string default " << EVALFILE << std::endl;
+            std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
             std::cout << "uciok" << std::endl;
             std::cout.flush();
 
@@ -128,6 +143,15 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                 g_nnue.loadNetwork(path);
                 board.setFen(chess::constants::STARTPOS);
                 thread.accumulatorStack.resetAccumulators(board);
+            } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyFile" && tokens[3] == "value") {
+                std::string path;
+                for (size_t i = 4; i < tokens.size(); ++i) {
+                    path += tokens[i];
+                    if (i + 1 < tokens.size()) path += " ";
+                }
+                if (!g_policy.load(path)) {
+                    std::cout << "info string PolicyFile load failed; keeping previous net" << std::endl;
+                }
             }
 
         } else if (command == "bench") {
@@ -147,6 +171,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             g_captureHistory.clear();
             g_contHist1ply.clear();
             g_contHist2ply.clear();
+            g_correctionHistory.clear();
 
         } else if (command == "position") {
             size_t moves_idx = 0;
@@ -198,8 +223,9 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             TimeManager tm;
             int time_left = (board.sideToMove() == chess::Color::WHITE) ? wtime : btime;
             int inc = (board.sideToMove() == chess::Color::WHITE) ? winc : binc;
-            
-            tm.init(time_left, inc, movestogo, movetime, board.fullMoveNumber() * 2 - (board.sideToMove() == chess::Color::WHITE ? 2 : 1));
+
+            tm.init(time_left, inc, movestogo, movetime,
+                    board.fullMoveNumber() * 2 - (board.sideToMove() == chess::Color::WHITE ? 2 : 1));
 
             chess::Move best = search(board, depth, thread, tm, nodes);
             std::cout << "bestmove " << chess::uci::moveToUci(best) << std::endl;
@@ -207,10 +233,60 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
         } else if (command == "quit") {
             return false;
-        
+
         } else if (command == "eval") {
             int val = g_nnue.evaluate(board, thread);
             std::cout << "NNUE static eval: " << val << std::endl;
+
+        } else if (command == "policy" || command == "policydebug") {
+            int topN = 16;
+            if (tokens.size() >= 2) {
+                try { topN = std::stoi(tokens[1]); } catch (...) {}
+            }
+            g_policy.debugPosition(board, topN);
+
+        } else if (command == "policyhit") {
+            // policyhit
+            // policyhit depth 10
+            // policyhit depth 12
+            // policyhit nodes 200000
+            int depth = 10;
+            int64_t nodes = 0;
+            for (size_t i = 1; i < tokens.size(); ++i) {
+                if (tokens[i] == "depth" && i + 1 < tokens.size()) {
+                    depth = std::stoi(tokens[i + 1]);
+                    nodes = 0;
+                    ++i;
+                } else if (tokens[i] == "nodes" && i + 1 < tokens.size()) {
+                    nodes = std::stoll(tokens[i + 1]);
+                    depth = 0;
+                    ++i;
+                } else if (is_integer(tokens[i])) {
+                    // shorthand: policyhit 12  => depth 12
+                    depth = std::stoi(tokens[i]);
+                    nodes = 0;
+                }
+            }
+            runPolicyHitBench(depth, nodes, thread);
+            // Restore board accumulator after bench (bench uses many FENs)
+            thread.accumulatorStack.resetAccumulators(board);
+
+        } else if (command == "policymove") {
+            if (tokens.size() < 2) {
+                std::cout << "info string usage: policymove <uci>" << std::endl;
+            } else {
+                chess::Move m = chess::uci::uciToMove(board, tokens[1]);
+                if (m == chess::Move()) {
+                    std::cout << "info string invalid move " << tokens[1] << std::endl;
+                } else {
+                    g_policy.debugMove(board, m);
+                }
+            }
+
+        } else if (command == "policyflip") {
+            g_policy.l1_out_major = !g_policy.l1_out_major;
+            std::cout << "info string l1_out_major="
+                      << (g_policy.l1_out_major ? 1 : 0) << std::endl;
 
         } else if (command == "debug") {
             thread.accumulatorStack.resetAccumulators(board);
@@ -223,7 +299,9 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         } else if (command == "d" || command == "display") {
             std::cout << board << std::endl;
             std::cout << "FEN: " << board.getFen() << std::endl;
-            std::cout << "Side to move: " << (board.sideToMove() == chess::Color::WHITE ? "White" : "Black") << std::endl;
+            std::cout << "Side to move: "
+                      << (board.sideToMove() == chess::Color::WHITE ? "White" : "Black")
+                      << std::endl;
             std::cout << "Pieces: " << board.occ().count() << std::endl;
         }
 
@@ -241,6 +319,11 @@ void uci_loop(int argc, char* argv[]) {
     std::cout << "info string Loading NNUE..." << std::endl;
     g_nnue.loadNetwork(EVALFILE);
     std::cout << "info string NNUE loaded" << std::endl;
+
+    std::cout << "info string Loading Policy (embedded)..." << std::endl;
+    if (!g_policy.loadFromMemory(g_policy_embed_data, g_policy_embed_size, "embedded")) {
+        std::cout << "info string Policy embedded load FAILED" << std::endl;
+    }
 
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
