@@ -6,6 +6,7 @@
 #include "nnue.h"
 #include "policy.h"
 #include "policy_embed.h"
+#include "policy_diag.h"
 
 #include <iostream>
 #include <sstream>
@@ -148,7 +149,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                     path += tokens[i];
                     if (i + 1 < tokens.size()) path += " ";
                 }
-                // Optional file override of embedded net
                 if (!g_policy.load(path)) {
                     std::cout << "info string PolicyFile load failed; keeping previous net" << std::endl;
                 }
@@ -171,6 +171,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             g_captureHistory.clear();
             g_contHist1ply.clear();
             g_contHist2ply.clear();
+            g_correctionHistory.clear();
 
         } else if (command == "position") {
             size_t moves_idx = 0;
@@ -244,6 +245,32 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             }
             g_policy.debugPosition(board, topN);
 
+        } else if (command == "policyhit") {
+            // policyhit
+            // policyhit depth 10
+            // policyhit depth 12
+            // policyhit nodes 200000
+            int depth = 10;
+            int64_t nodes = 0;
+            for (size_t i = 1; i < tokens.size(); ++i) {
+                if (tokens[i] == "depth" && i + 1 < tokens.size()) {
+                    depth = std::stoi(tokens[i + 1]);
+                    nodes = 0;
+                    ++i;
+                } else if (tokens[i] == "nodes" && i + 1 < tokens.size()) {
+                    nodes = std::stoll(tokens[i + 1]);
+                    depth = 0;
+                    ++i;
+                } else if (is_integer(tokens[i])) {
+                    // shorthand: policyhit 12  => depth 12
+                    depth = std::stoi(tokens[i]);
+                    nodes = 0;
+                }
+            }
+            runPolicyHitBench(depth, nodes, thread);
+            // Restore board accumulator after bench (bench uses many FENs)
+            thread.accumulatorStack.resetAccumulators(board);
+
         } else if (command == "policymove") {
             if (tokens.size() < 2) {
                 std::cout << "info string usage: policymove <uci>" << std::endl;
@@ -293,7 +320,6 @@ void uci_loop(int argc, char* argv[]) {
     g_nnue.loadNetwork(EVALFILE);
     std::cout << "info string NNUE loaded" << std::endl;
 
-    // Always load embedded policy first (OpenBench-safe: no file required).
     std::cout << "info string Loading Policy (embedded)..." << std::endl;
     if (!g_policy.loadFromMemory(g_policy_embed_data, g_policy_embed_size, "embedded")) {
         std::cout << "info string Policy embedded load FAILED" << std::endl;
