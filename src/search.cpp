@@ -654,15 +654,26 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            reduction = std::clamp(reduction, 1, new_depth - 1);
+            // Allow history to cancel LMR entirely (reduction == 0)
+            reduction = std::clamp(reduction, 0, new_depth - 1);
 
-            eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
-                              ply_from_root + 1, thread, tm, stats, true, move, ss);
+            if (reduction > 0) {
+                // Reduced null-window search
+                eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
 
-            if (eval > alpha && reduction > 1) {
+                // Re-search full depth only if the reduced search beat alpha
+                if (eval > alpha) {
+                    eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
+                                      ply_from_root + 1, thread, tm, stats, true, move, ss);
+                }
+            } else {
+                // No reduction — full-depth null window
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
             }
+
+            // PV re-search
             if (eval > alpha && eval < beta) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
