@@ -32,7 +32,7 @@ constexpr int POLICY_QUIET_WEIGHT = 1024;
 //   else              → keep top POLICY_KEEP_PERCENT % (ceil, at least 1)
 //   POLICY_KEEP_PERCENT = 100 → old full-span behaviour
 //   POLICY_KEEP_PERCENT = 50  → cut bottom half (recommended default)
-constexpr int POLICY_TOP_K         = 0;
+constexpr int POLICY_TOP_K         = 3;
 constexpr int POLICY_KEEP_PERCENT  = 50;
 
 // Only run policy in move picker at this depth and above (huge NPS win)
