@@ -36,11 +36,11 @@ constexpr int POLICY_MIN_DEPTH     = 6;
 // 1a: policy-disagreement time management (root only, zero NPS tax in-tree)
 // ============================================================================
 constexpr int    POLICY_TM_MIN_DEPTH    = 6;
-constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // top1 >= this + agree → less time
-constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;  // top1 <  this        → more time
-constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
-constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
-constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
+constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // unused for shrink now; kept for logging
+constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
+constexpr double POLICY_TM_DISAGREE     = 1.25;   // was 1.35 — milder
+constexpr double POLICY_TM_UNCERTAIN_S  = 1.15;   // was 1.25 — milder
+constexpr double POLICY_TM_AGREE_S      = 1.00;   // was 0.88 — 
 
 struct PolicyNet {
     bool loaded = false;

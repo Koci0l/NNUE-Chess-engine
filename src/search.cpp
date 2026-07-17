@@ -1042,8 +1042,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         if (g_policy.loaded &&
             depth >= POLICY_TM_MIN_DEPTH &&
-            node_limit <= 0 &&                    // skip fixed-nodes
-            tm.soft_limit_ms < tm.hard_limit_ms)  // skip pure movetime
+            node_limit <= 0 &&
+            tm.soft_limit_ms < tm.hard_limit_ms)
         {
             chess::Move pol_top;
             float pol_p = 0.f;
@@ -1053,19 +1053,18 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 double scale = 1.0;
                 const bool disagree = (pol_top != best_move);
 
-                if (disagree) {
-                    scale = POLICY_TM_DISAGREE;
-                    // disagreement + uncertainty → stretch a bit more
-                    if (pol_p < POLICY_TM_UNCERTAIN) {
-                        scale = 1.50;
-                    }
-                } else if (pol_p >= POLICY_TM_AGREE_CONF) {
-                    // high-confidence agreement → save a little clock
-                    scale = POLICY_TM_AGREE_S;
-                } else if (pol_p < POLICY_TM_UNCERTAIN) {
-                    // agreement but net is unsure → think a bit longer
-                    scale = POLICY_TM_UNCERTAIN_S;
+                // Only stretch when search has not already settled.
+                // Stable PV + extra time is low EV at LTC.
+                const bool unsettled = (tm.stability_count <= 2);
+
+                if (disagree && unsettled) {
+                    scale = (pol_p < POLICY_TM_UNCERTAIN)
+                              ? 1.40                    // disagree + uncertain
+                              : POLICY_TM_DISAGREE;     // 1.25
+                } else if (!disagree && pol_p < POLICY_TM_UNCERTAIN && unsettled) {
+                    scale = POLICY_TM_UNCERTAIN_S;      // 1.15
                 }
+                // agree + high conf → scale stays 1.0 (no shrink)
 
                 tm.set_policy_time_scale(scale);
 
@@ -1074,23 +1073,18 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                               << " depth " << depth
                               << " scale " << scale
                               << (disagree ? " disagree" : " agree")
+                              << (unsettled ? " unsettled" : " stable")
                               << " pol " << chess::uci::moveToUci(pol_top)
                               << " (" << (pol_p * 100.f) << "%)"
                               << " search " << chess::uci::moveToUci(best_move)
+                              << " stab " << tm.stability_count
                               << " ent " << pol_ent
                               << std::endl;
                 }
             } else {
                 tm.set_policy_time_scale(1.0);
             }
-        } else {
-            // Keep scale neutral outside the gate so a prior depth's stretch
-            // doesn't leak into node-limited or early depths.
-            // (Actually: once we pass MIN_DEPTH we always recompute; before
-            //  that, leave at 1.0 from init. No action needed here.)
         }
-    }
-
 search_done:
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
