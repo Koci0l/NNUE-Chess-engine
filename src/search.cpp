@@ -1057,7 +1057,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
-<<<<<<< Updated upstream
         auto depth_end = std::chrono::high_resolution_clock::now();
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             depth_end - depth_start).count();
@@ -1065,12 +1064,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         int64_t elapsed = tm.elapsed_ms();
         int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
         uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
-=======
         {
             auto depth_end = std::chrono::high_resolution_clock::now();
             last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 depth_end - depth_start).count();
->>>>>>> Stashed changes
 
         auto pv_line = extractPV(board, depth);
         std::string pv_str;
@@ -1112,27 +1109,21 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 const bool disagree = (pol_top != best_move);
 
                 if (disagree) {
-<<<<<<< Updated upstream
                     scale = POLICY_TM_DISAGREE;
                     // disagreement + uncertainty → stretch a bit more
-=======
                     scale = POLICY_TM_DISAGREE; // 1.35
->>>>>>> Stashed changes
                     if (pol_p < POLICY_TM_UNCERTAIN) {
                         scale = 1.50;
                     }
                 } else if (pol_p >= POLICY_TM_AGREE_CONF) {
-<<<<<<< Updated upstream
                     // high-confidence agreement → save a little clock
                     scale = POLICY_TM_AGREE_S;
                 } else if (pol_p < POLICY_TM_UNCERTAIN) {
                     // agreement but net is unsure → think a bit longer
                     scale = POLICY_TM_UNCERTAIN_S;
-=======
                     scale = POLICY_TM_AGREE_S;  // 0.88
                 } else if (pol_p < POLICY_TM_UNCERTAIN) {
                     scale = POLICY_TM_UNCERTAIN_S; // 1.25
->>>>>>> Stashed changes
                 }
 
                 tm.set_policy_time_scale(scale);
