@@ -1006,37 +1006,40 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
-        auto depth_end = std::chrono::high_resolution_clock::now();
-        last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            depth_end - depth_start).count();
 
-        int64_t elapsed = tm.elapsed_ms();
-        int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
-        uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
+        {
+            auto depth_end = std::chrono::high_resolution_clock::now();
+            last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                depth_end - depth_start).count();
 
-        auto pv_line = extractPV(board, depth);
-        std::string pv_str;
-        for (const auto& m : pv_line) pv_str += chess::uci::moveToUci(m) + " ";
-        if (pv_str.empty()) pv_str = chess::uci::moveToUci(best_move);
+            int64_t elapsed = tm.elapsed_ms();
+            int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
+            uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
 
-        std::string score_str;
-        if (best_score >= MATE_SCORE - 100) {
-            int mate_in = (MATE_SCORE - best_score + 1) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else if (best_score <= -MATE_SCORE + 100) {
-            int mate_in = -(MATE_SCORE + best_score) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else {
-            score_str = "cp " + std::to_string(best_score);
+            auto pv_line = extractPV(board, depth);
+            std::string pv_str;
+            for (const auto& m : pv_line) pv_str += chess::uci::moveToUci(m) + " ";
+            if (pv_str.empty()) pv_str = chess::uci::moveToUci(best_move);
+
+            std::string score_str;
+            if (best_score >= MATE_SCORE - 100) {
+                int mate_in = (MATE_SCORE - best_score + 1) / 2;
+                score_str = "mate " + std::to_string(mate_in);
+            } else if (best_score <= -MATE_SCORE + 100) {
+                int mate_in = -(MATE_SCORE + best_score) / 2;
+                score_str = "mate " + std::to_string(mate_in);
+            } else {
+                score_str = "cp " + std::to_string(best_score);
+            }
+
+            if (!g_silent)
+                std::cout
+                    << "info score " << score_str
+                    << " depth " << depth
+                    << " nodes " << stats.nodes
+                    << " nps " << nps << " time "
+                    << elapsed << " pv " << pv_str << "\n";
         }
-
-        if (!g_silent)
-            std::cout
-                << "info score " << score_str
-                << " depth " << depth
-                << " nodes " << stats.nodes
-                << " nps " << nps << " time "
-                << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);
 
@@ -1051,18 +1054,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
             if (g_policy.rootAdvice(board, pol_top, pol_p, &pol_ent)) {
                 double scale = 1.0;
-                const bool disagree = (pol_top != best_move);
-
-                // Only stretch when search has not already settled.
-                // Stable PV + extra time is low EV at LTC.
+                const bool disagree  = (pol_top != best_move);
                 const bool unsettled = (tm.stability_count <= 2);
 
                 if (disagree && unsettled) {
                     scale = (pol_p < POLICY_TM_UNCERTAIN)
-                              ? 1.40                    // disagree + uncertain
-                              : POLICY_TM_DISAGREE;     // 1.25
+                              ? 1.40
+                              : POLICY_TM_DISAGREE;       // 1.25
                 } else if (!disagree && pol_p < POLICY_TM_UNCERTAIN && unsettled) {
-                    scale = POLICY_TM_UNCERTAIN_S;      // 1.15
+                    scale = POLICY_TM_UNCERTAIN_S;        // 1.15
                 }
                 // agree + high conf → scale stays 1.0 (no shrink)
 
@@ -1085,6 +1085,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 tm.set_policy_time_scale(1.0);
             }
         }
+
+    }
+
 search_done:
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
