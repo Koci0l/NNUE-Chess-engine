@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <string>
 
 bool g_silent = false;
 
@@ -555,8 +556,41 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    // Path A: never reorder with policy in the tree
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
+
+    const bool policy_prune_node =
+        g_policy.loaded &&
+        !in_singular_search &&
+        !is_pv_node &&
+        !in_check &&
+        depth <= POLICY_PRUNE_MAX_DEPTH &&
+        depth >= 1;
+
+    chess::Movelist pol_moves;
+    int pol_rank[256];
+    int pol_nq = 0;
+    bool pol_ready = false;
+
+    auto ensurePolicyRanks = [&]() {
+        if (pol_ready) return;
+        pol_ready = true;
+        for (int i = 0; i < 256; ++i) pol_rank[i] = -1;
+        pol_nq = 0;
+        chess::movegen::legalmoves(pol_moves, board);
+        if (pol_moves.size() > 0 &&
+            static_cast<int>(pol_moves.size()) <= 256) {
+            policyRanksForNode(board, hash, pol_moves, pol_rank, &pol_nq);
+        }
+    };
+
+    auto policyQuietRank = [&](const chess::Move& m) -> int {
+        ensurePolicyRanks();
+        const int n = static_cast<int>(pol_moves.size());
+        for (int i = 0; i < n; ++i) {
+            if (pol_moves[i] == m) return pol_rank[i];
+        }
+        return -1;
+    };
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -595,6 +629,23 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
             if (hist_score < -2000 * depth) continue;
+        }
+
+        if (policy_prune_node &&
+            is_quiet &&
+            move != tt_move &&
+            !g_killerMoves.is_killer(ply_from_root, move) &&
+            move_count >= POLICY_PRUNE_MOVE_BASE + depth &&
+            best_score > -MATE_SCORE + 100)
+        {
+            const int pr = policyQuietRank(move);
+            // bottom quartile among quiets: rank >= 0.75 * nq
+            if (pr >= 0 &&
+                pol_nq >= POLICY_PRUNE_MIN_QUIETS &&
+                pr >= (pol_nq * 3) / 4)
+            {
+                continue;
+            }
         }
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
@@ -845,6 +896,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     }
 
     advanceTTGeneration();
+    g_policy_rank_cache.clear();
 
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
@@ -873,7 +925,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
-            // Path A: history/TT ordering only — no policy sort
             MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/false);
 
             // One policy pass per root iteration: quiet ranks for LMR
@@ -1006,6 +1057,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
+<<<<<<< Updated upstream
         auto depth_end = std::chrono::high_resolution_clock::now();
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             depth_end - depth_start).count();
@@ -1013,6 +1065,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         int64_t elapsed = tm.elapsed_ms();
         int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
         uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
+=======
+        {
+            auto depth_end = std::chrono::high_resolution_clock::now();
+            last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                depth_end - depth_start).count();
+>>>>>>> Stashed changes
 
         auto pv_line = extractPV(board, depth);
         std::string pv_str;
@@ -1054,17 +1112,27 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 const bool disagree = (pol_top != best_move);
 
                 if (disagree) {
+<<<<<<< Updated upstream
                     scale = POLICY_TM_DISAGREE;
                     // disagreement + uncertainty → stretch a bit more
+=======
+                    scale = POLICY_TM_DISAGREE; // 1.35
+>>>>>>> Stashed changes
                     if (pol_p < POLICY_TM_UNCERTAIN) {
                         scale = 1.50;
                     }
                 } else if (pol_p >= POLICY_TM_AGREE_CONF) {
+<<<<<<< Updated upstream
                     // high-confidence agreement → save a little clock
                     scale = POLICY_TM_AGREE_S;
                 } else if (pol_p < POLICY_TM_UNCERTAIN) {
                     // agreement but net is unsure → think a bit longer
                     scale = POLICY_TM_UNCERTAIN_S;
+=======
+                    scale = POLICY_TM_AGREE_S;  // 0.88
+                } else if (pol_p < POLICY_TM_UNCERTAIN) {
+                    scale = POLICY_TM_UNCERTAIN_S; // 1.25
+>>>>>>> Stashed changes
                 }
 
                 tm.set_policy_time_scale(scale);
@@ -1094,6 +1162,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 search_done:
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
+    if (!g_silent && (g_policy_rank_cache.hits + g_policy_rank_cache.misses) > 0) {
+        const uint64_t t = g_policy_rank_cache.hits + g_policy_rank_cache.misses;
+        std::cerr << "info string policy_cache hits " << g_policy_rank_cache.hits
+                  << " misses " << g_policy_rank_cache.misses
+                  << " rate " << (100.0 * double(g_policy_rank_cache.hits) / double(t))
+                  << "%" << std::endl;
+    }
     std::cerr << "info string total nodes searched " << stats.nodes << std::endl;
     return best_move;
 }

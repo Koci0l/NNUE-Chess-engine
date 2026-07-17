@@ -1,6 +1,3 @@
-// ============================================================================
-// policy.cpp
-// ============================================================================
 #include "policy.h"
 #include "policy_embed.h"
 #include "see.h"
@@ -14,6 +11,7 @@
 #include <vector>
 
 PolicyNet g_policy;
+PolicyRankCache g_policy_rank_cache;
 
 // ============================================================================
 // Bit helpers
@@ -117,6 +115,66 @@ static inline float crelu01(float x) {
 #endif
 
 // ============================================================================
+// PolicyRankCache
+// ============================================================================
+
+void PolicyRankCache::clear() {
+    for (int i = 0; i < POLICY_RANK_CACHE_SIZE; ++i) {
+        table[i].key = ~0ULL;
+        table[i].n = 0;
+        table[i].nq = 0;
+    }
+    hits = 0;
+    misses = 0;
+}
+
+bool PolicyRankCache::probe(uint64_t hash, int nmoves, int* out_ranks, int* out_nq) {
+    if (nmoves <= 0 || nmoves > POLICY_RANK_CACHE_MAX_MOVES) return false;
+    Entry& e = table[hash & (POLICY_RANK_CACHE_SIZE - 1)];
+    if (e.key != hash || e.n != nmoves) {
+        ++misses;
+        return false;
+    }
+    for (int i = 0; i < nmoves; ++i) out_ranks[i] = static_cast<int>(e.ranks[i]);
+    if (out_nq) *out_nq = e.nq;
+    ++hits;
+    return true;
+}
+
+void PolicyRankCache::store(uint64_t hash, int nmoves, const int* ranks, int nq) {
+    if (nmoves <= 0 || nmoves > POLICY_RANK_CACHE_MAX_MOVES) return;
+    Entry& e = table[hash & (POLICY_RANK_CACHE_SIZE - 1)];
+    e.key = hash;
+    e.n = static_cast<int16_t>(nmoves);
+    e.nq = static_cast<int16_t>(nq);
+    for (int i = 0; i < nmoves; ++i) {
+        int r = ranks[i];
+        if (r < -1) r = -1;
+        if (r > 127) r = 127;
+        e.ranks[i] = static_cast<int8_t>(r);
+    }
+}
+
+bool policyRanksForNode(const chess::Board& board, uint64_t hash,
+                        const chess::Movelist& moves,
+                        int* out_rank, int* out_nq) {
+    const int n = static_cast<int>(moves.size());
+    if (out_nq) *out_nq = 0;
+    if (!g_policy.loaded || n <= 0) return false;
+
+    if (g_policy_rank_cache.probe(hash, n, out_rank, out_nq)) {
+        return true;
+    }
+
+    if (!g_policy.rankLegalQuiets(board, moves, out_rank, out_nq)) {
+        return false;
+    }
+
+    g_policy_rank_cache.store(hash, n, out_rank, out_nq ? *out_nq : 0);
+    return true;
+}
+
+// ============================================================================
 // PolicyNet
 // ============================================================================
 
@@ -208,10 +266,10 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " moves=" << num_moves
               << " l1_out_major=1"
               << " bytes=" << size
-              << " mode=root_lmr+tm"
+              << " mode=root_lmr+tm_v1+prune"
               << " lmr_top=" << POLICY_ROOT_LMR_TOP
-              << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
               << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
+              << " prune_max_depth=" << POLICY_PRUNE_MAX_DEPTH
               << std::endl;
     return true;
 }
@@ -495,7 +553,7 @@ static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
     if (m.typeOf() == chess::Move::PROMOTION) return false;
     if (m.typeOf() == chess::Move::ENPASSANT) return false;
     if (board.at(m.to()) != chess::Piece::NONE) return false;
-    return true; // includes castling
+    return true;
 }
 
 // ============================================================================
@@ -592,7 +650,6 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
         logits[q] = (mi >= 0) ? logitForMoveIndex(*this, h1, mi) : -1e9f;
     }
 
-    // argsort desc by logit
     int order[256];
     for (int q = 0; q < nq; ++q) order[q] = q;
     std::sort(order, order + nq, [&](int a, int b) {
@@ -601,15 +658,11 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
 
     for (int rank = 0; rank < nq; ++rank) {
         const int q = order[rank];
-        out_rank[quiet_i[q]] = rank; // 0 = best policy quiet
+        out_rank[quiet_i[q]] = rank;
     }
 
     return true;
 }
-
-// ============================================================================
-// 1a: root advice for time management
-// ============================================================================
 
 bool PolicyNet::rootAdvice(const chess::Board& board,
                            chess::Move& out_top,
@@ -625,7 +678,6 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
     chess::movegen::legalmoves(moves, board);
     if (moves.empty()) return false;
 
-    // stack buffer for normal root branching; heap fallback if needed
     float probs_stack[256];
     std::vector<float> probs_heap;
     float* probs = probs_stack;
@@ -687,9 +739,7 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << " flip=" << flip
               << " from_to=" << from_to
               << " num_moves=" << num_moves
-              << " mode=root_lmr+tm"
-              << " lmr_top=" << POLICY_ROOT_LMR_TOP
-              << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
+              << " mode=root_lmr+tm_v1+prune"
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";
