@@ -10,6 +10,7 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
     stability_count = 0;
     node_limit = 0;
     node_counter = nullptr;
+    policy_scale = 1.0;          // reset every search
     start_time = std::chrono::high_resolution_clock::now();
 
     if (movetime_ms > 0) {
@@ -29,33 +30,28 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
 
     int base_time;
     if (mtg > 0) {
-        // Moves-to-go: distribute evenly, small buffer
         base_time = available / std::max(1, mtg + 1) + inc_ms * 3 / 4;
     } else {
-        // Sudden death + Fischer increment
-        // OLD: max(10, 50 - move) — way too many estimated moves remaining
-        // NEW: max(8, 35 - move) — more realistic, uses time more aggressively
         int est_moves_left = std::max(8, 35 - move_number);
-
-        // KEY FIX: We will earn increment on every future move.
-        // Factor that into our budget so we actually spend our time.
         int effective_time = available + est_moves_left * inc_ms * 2 / 3;
-
         base_time = effective_time / est_moves_left;
     }
 
-    // Cap: never plan to use more than 40% of remaining clock (was 25%)
     base_time = std::min(base_time, available * 2 / 5);
 
     soft_limit_ms = std::max(MIN_THINKING_TIME, base_time);
-
-    // Hard limit: up to 5× base (was 3×), capped at 60% of remaining (was 50%)
     hard_limit_ms = std::max(soft_limit_ms, std::min(base_time * 5, available * 3 / 5));
 }
 
 void TimeManager::set_node_limit(int64_t nodes, const uint64_t* counter) {
     node_limit = nodes;
     node_counter = counter;
+}
+
+void TimeManager::set_policy_time_scale(double scale) {
+    // Bound so a single weird position can't blow the clock or starve us.
+    // Only useful when soft < hard (clock games); ignored otherwise.
+    policy_scale = std::clamp(scale, 0.70, 1.60);
 }
 
 int64_t TimeManager::elapsed_ms() const {
@@ -75,11 +71,9 @@ bool TimeManager::should_continue_depth(int /*depth*/, double last_depth_ms) con
 
     int64_t elapsed = elapsed_ms();
 
-    // Stability-adjusted soft limit
-    double adjusted_soft = soft_limit_ms * stability_factor();
+    double adjusted_soft = soft_limit_ms * stability_factor() * policy_scale;
     if (elapsed >= adjusted_soft) return false;
 
-    // Estimate next depth — branching factor ~2.5 (was 3.0, too pessimistic)
     double estimated_next = last_depth_ms * 2.5;
     if (elapsed + estimated_next > hard_limit_ms) return false;
 
@@ -95,8 +89,6 @@ void TimeManager::update_stability(chess::Move best_move) {
 }
 
 double TimeManager::stability_factor() const {
-    // OLD: went down to 0.5 after just 4 stable iterations — way too aggressive
-    // NEW: minimum 0.65, requires 6+ stable iterations, much more gradual
     if (stability_count >= 6) return 0.65;
     if (stability_count >= 5) return 0.70;
     if (stability_count >= 4) return 0.75;

@@ -17,11 +17,14 @@ struct TimeManager {
     chess::Move last_best_move;
     int stability_count = 0;
 
+    double policy_scale = 1.0;
+
     static constexpr int MOVE_OVERHEAD_MS = 50;
     static constexpr int MIN_THINKING_TIME = 10;
 
     void init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int ply);
     void set_node_limit(int64_t nodes, const uint64_t* counter);
+    void set_policy_time_scale(double scale);
     int64_t elapsed_ms() const;
     bool should_stop() const;
     bool should_continue_depth(int depth, double last_depth_ms) const;

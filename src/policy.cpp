@@ -1,3 +1,6 @@
+// ============================================================================
+// policy.cpp
+// ============================================================================
 #include "policy.h"
 #include "policy_embed.h"
 #include "see.h"
@@ -205,9 +208,10 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " moves=" << num_moves
               << " l1_out_major=1"
               << " bytes=" << size
-              << " mode=root_lmr"
+              << " mode=root_lmr+tm"
               << " lmr_top=" << POLICY_ROOT_LMR_TOP
               << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
+              << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
     return true;
 }
@@ -604,6 +608,54 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
 }
 
 // ============================================================================
+// 1a: root advice for time management
+// ============================================================================
+
+bool PolicyNet::rootAdvice(const chess::Board& board,
+                           chess::Move& out_top,
+                           float& out_top1_prob,
+                           float* entropy_out) const {
+    out_top = chess::Move();
+    out_top1_prob = 0.f;
+    if (entropy_out) *entropy_out = 0.f;
+
+    if (!loaded) return false;
+
+    chess::Movelist moves;
+    chess::movegen::legalmoves(moves, board);
+    if (moves.empty()) return false;
+
+    // stack buffer for normal root branching; heap fallback if needed
+    float probs_stack[256];
+    std::vector<float> probs_heap;
+    float* probs = probs_stack;
+    if (moves.size() > 256) {
+        probs_heap.resize(moves.size());
+        probs = probs_heap.data();
+    }
+
+    if (!scoreLegalMoves(board, moves, probs)) return false;
+
+    int best_i = 0;
+    float best_p = probs[0];
+    double ent = 0.0;
+    for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
+        if (probs[i] > best_p) {
+            best_p = probs[i];
+            best_i = i;
+        }
+        if (probs[i] > 1e-12f) {
+            ent -= double(probs[i]) * std::log(double(probs[i]));
+        }
+    }
+
+    out_top = moves[best_i];
+    out_top1_prob = best_p;
+    if (entropy_out) *entropy_out = static_cast<float>(ent);
+    return true;
+}
+
+// ============================================================================
 // Debug
 // ============================================================================
 
@@ -635,8 +687,9 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << " flip=" << flip
               << " from_to=" << from_to
               << " num_moves=" << num_moves
-              << " mode=root_lmr"
+              << " mode=root_lmr+tm"
               << " lmr_top=" << POLICY_ROOT_LMR_TOP
+              << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";

@@ -1,3 +1,6 @@
+// ============================================================================
+// policy.h
+// ============================================================================
 #pragma once
 
 #include "chess.hpp"
@@ -24,9 +27,20 @@ constexpr int POLICY_SEE_TH      = -108;
 // Bottom half of quiets: extra reduction
 constexpr int POLICY_ROOT_LMR_MIN_DEPTH = 3;
 constexpr int POLICY_ROOT_LMR_TOP       = 3;
+
 // Legacy
 constexpr int POLICY_QUIET_WEIGHT  = 1024;
 constexpr int POLICY_MIN_DEPTH     = 6;
+
+// ============================================================================
+// 1a: policy-disagreement time management (root only, zero NPS tax in-tree)
+// ============================================================================
+constexpr int    POLICY_TM_MIN_DEPTH    = 6;
+constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // top1 >= this + agree → less time
+constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;  // top1 <  this        → more time
+constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
+constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
+constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
 
 struct PolicyNet {
     bool loaded = false;
@@ -68,6 +82,12 @@ struct PolicyNet {
                          const chess::Movelist& moves,
                          int* out_rank,
                          int* out_nq = nullptr) const;
+
+    // On success writes out_top / out_top1_prob; entropy_out optional.
+    bool rootAdvice(const chess::Board& board,
+                    chess::Move& out_top,
+                    float& out_top1_prob,
+                    float* entropy_out = nullptr) const;
 
     void collectFeatures(const chess::Board& board, int* feats, int& nfeats) const;
     int  mapMoveToIndex(const chess::Board& board, const chess::Move& m) const;
