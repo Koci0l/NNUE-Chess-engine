@@ -17,6 +17,7 @@ struct TimeManager {
     chess::Move last_best_move;
     int stability_count = 0;
 
+    // Soft-limit scale from root policy advice (reset each search)
     double policy_scale = 1.0;
 
     static constexpr int MOVE_OVERHEAD_MS = 50;

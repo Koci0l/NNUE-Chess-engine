@@ -1,6 +1,3 @@
-// ============================================================================
-// policy.cpp
-// ============================================================================
 #include "policy.h"
 #include "policy_embed.h"
 #include "see.h"
@@ -14,10 +11,6 @@
 #include <vector>
 
 PolicyNet g_policy;
-
-// ============================================================================
-// Bit helpers
-// ============================================================================
 
 static int popcount64(uint64_t x) {
 #if defined(__GNUC__) || defined(__clang__)
@@ -55,10 +48,6 @@ static uint64_t bswap64_local(uint64_t x) {
     x = ((x & 0x00FF00FF00FF00FFULL) << 8)  | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
     return x;
 }
-
-// ============================================================================
-// Destination tables (must match inputs.rs)
-// ============================================================================
 
 static constexpr uint64_t FILE_A = 0x0101010101010101ULL;
 static constexpr uint64_t FILE_H = FILE_A << 7;
@@ -115,10 +104,6 @@ static inline float crelu01(float x) {
 #ifndef POLICY_CASTLE_SEE_FORCE
 #define POLICY_CASTLE_SEE_FORCE -1
 #endif
-
-// ============================================================================
-// PolicyNet
-// ============================================================================
 
 PolicyNet::PolicyNet() {
     for (int sq = 0; sq < 64; ++sq) {
@@ -208,10 +193,6 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " moves=" << num_moves
               << " l1_out_major=1"
               << " bytes=" << size
-              << " mode=root_lmr+tm"
-              << " lmr_top=" << POLICY_ROOT_LMR_TOP
-              << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
-              << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
     return true;
 }
@@ -238,10 +219,6 @@ bool PolicyNet::load(const std::string& path) {
 
     return loadFromMemory(buf.data(), buf.size(), path.c_str());
 }
-
-// ============================================================================
-// Board helpers
-// ============================================================================
 
 int PolicyNet::stmKingIndex(const chess::Board& board) {
     return board.kingSq(board.sideToMove()).index();
@@ -305,10 +282,6 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
     return threats;
 }
 
-// ============================================================================
-// Features
-// ============================================================================
-
 void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfeats) const {
     nfeats = 0;
 
@@ -358,10 +331,6 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
         }
     }
 }
-
-// ============================================================================
-// Move index
-// ============================================================================
 
 int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) const {
     const int ksq = stmKingIndex(board);
@@ -452,10 +421,6 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
     return index;
 }
 
-// ============================================================================
-// Hidden
-// ============================================================================
-
 static void computeHidden(const PolicyNet& net,
                           const int* feats, int nfeats,
                           float* h1) {
@@ -495,12 +460,8 @@ static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
     if (m.typeOf() == chess::Move::PROMOTION) return false;
     if (m.typeOf() == chess::Move::ENPASSANT) return false;
     if (board.at(m.to()) != chess::Piece::NONE) return false;
-    return true; // includes castling
+    return true;
 }
-
-// ============================================================================
-// Forward
-// ============================================================================
 
 bool PolicyNet::logitsLegalMoves(const chess::Board& board,
                                  const chess::Movelist& moves,
@@ -592,7 +553,6 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
         logits[q] = (mi >= 0) ? logitForMoveIndex(*this, h1, mi) : -1e9f;
     }
 
-    // argsort desc by logit
     int order[256];
     for (int q = 0; q < nq; ++q) order[q] = q;
     std::sort(order, order + nq, [&](int a, int b) {
@@ -601,15 +561,11 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
 
     for (int rank = 0; rank < nq; ++rank) {
         const int q = order[rank];
-        out_rank[quiet_i[q]] = rank; // 0 = best policy quiet
+        out_rank[quiet_i[q]] = rank;
     }
 
     return true;
 }
-
-// ============================================================================
-// 1a: root advice for time management
-// ============================================================================
 
 bool PolicyNet::rootAdvice(const chess::Board& board,
                            chess::Move& out_top,
@@ -625,7 +581,6 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
     chess::movegen::legalmoves(moves, board);
     if (moves.empty()) return false;
 
-    // stack buffer for normal root branching; heap fallback if needed
     float probs_stack[256];
     std::vector<float> probs_heap;
     float* probs = probs_stack;
@@ -655,10 +610,6 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
     return true;
 }
 
-// ============================================================================
-// Debug
-// ============================================================================
-
 void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
     if (!loaded) {
         std::cout << "info string Policy not loaded" << std::endl;
@@ -687,9 +638,6 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
               << " flip=" << flip
               << " from_to=" << from_to
               << " num_moves=" << num_moves
-              << " mode=root_lmr+tm"
-              << " lmr_top=" << POLICY_ROOT_LMR_TOP
-              << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
 
     std::cout << "info string features (" << nfeats << "):";

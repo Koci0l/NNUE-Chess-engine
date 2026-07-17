@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <string>
 
 bool g_silent = false;
 
@@ -132,7 +133,7 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to(); // Disservin: to() is rook square
+        chess::Square rook_from = move.to();
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
@@ -488,12 +489,22 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             struct ProbCutMove {
                 chess::Move mv;
-                int score;
+                float policy_score;
+                int mvv;
             };
             std::vector<ProbCutMove> probcut_moves;
             probcut_moves.reserve(all_moves.size());
 
-            for (const auto& mv : all_moves) {
+            float pol_logits[256];
+            bool have_policy = false;
+            if (g_policy.loaded &&
+                all_moves.size() > 0 &&
+                static_cast<int>(all_moves.size()) <= 256) {
+                have_policy = g_policy.logitsLegalMoves(board, all_moves, pol_logits);
+            }
+
+            for (int i = 0; i < static_cast<int>(all_moves.size()); ++i) {
+                const auto& mv = all_moves[i];
                 bool is_capture = board.at(mv.to()) != chess::Piece::NONE ||
                                   mv.typeOf() == chess::Move::ENPASSANT;
                 bool is_promotion = mv.typeOf() == chess::Move::PROMOTION;
@@ -507,13 +518,21 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                     victim = pieceValue(board.at(mv.to()).type());
                 }
                 int attacker = pieceValue(board.at(mv.from()).type());
-                int move_score = victim * 10 - attacker + (is_promotion ? 500 : 0);
-                probcut_moves.push_back({mv, move_score});
+                int mvv = victim * 10 - attacker + (is_promotion ? 500 : 0);
+
+                float pscore = static_cast<float>(mvv);
+                if (have_policy) {
+                    pscore = pol_logits[i];
+                }
+
+                probcut_moves.push_back({mv, pscore, mvv});
             }
 
             std::sort(probcut_moves.begin(), probcut_moves.end(),
                       [](const ProbCutMove& a, const ProbCutMove& b) {
-                          return a.score > b.score;
+                          if (a.policy_score != b.policy_score)
+                              return a.policy_score > b.policy_score;
+                          return a.mvv > b.mvv;
                       });
 
             for (size_t i = 0; i < std::min(probcut_moves.size(), size_t(PROBCUT_MAX_MOVES)); ++i) {
@@ -555,8 +574,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    // Path A: never reorder with policy in the tree
-    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
+    MovePicker mp(board, mpCtx, depth, false, false);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -654,26 +672,21 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            // Allow history to cancel LMR entirely (reduction == 0)
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
-                // Reduced null-window search
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
 
-                // Re-search full depth only if the reduced search beat alpha
                 if (eval > alpha) {
                     eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                       ply_from_root + 1, thread, tm, stats, true, move, ss);
                 }
             } else {
-                // No reduction — full-depth null window
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
             }
 
-            // PV re-search
             if (eval > alpha && eval < beta) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
@@ -873,10 +886,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
-            // Path A: history/TT ordering only — no policy sort
-            MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/false);
+            MovePicker rootPicker(board, rootCtx, depth, false, false);
 
-            // One policy pass per root iteration: quiet ranks for LMR
             chess::Movelist root_legals;
             chess::movegen::legalmoves(root_legals, board);
 
@@ -925,14 +936,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
-                    // Full window first move — no LMR
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
                 } else {
                     int new_depth = depth - 1;
                     int reduction = 0;
 
-                    // Path A: root LMR modulated by policy quiet rank
                     if (use_policy_lmr &&
                         root_is_quiet &&
                         new_depth >= 1 &&
@@ -943,11 +952,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                         const int pr = findPolicyRank(move);
                         if (pr >= 0) {
-                            // Top policy quiets: less reduction
                             if (pr < POLICY_ROOT_LMR_TOP) {
                                 reduction = std::max(0, reduction - 1);
                             }
-                            // Bottom half of quiets: extra reduction
                             if (policy_nq >= 4 && pr >= (policy_nq / 2)) {
                                 reduction += 1;
                             }
@@ -956,16 +963,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
                     }
 
-                    // PVS null window (possibly reduced)
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
 
-                    // Re-search full depth if reduced search beats alpha
                     if (eval > alpha && reduction > 0) {
                         eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
                                           thread, &tm, stats, true, move, ss);
                     }
-                    // Full window re-search
                     if (eval > alpha && eval < beta) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
                                           thread, &tm, stats, true, move, ss);
@@ -1006,44 +1010,46 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
-        auto depth_end = std::chrono::high_resolution_clock::now();
-        last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            depth_end - depth_start).count();
+        {
+            auto depth_end = std::chrono::high_resolution_clock::now();
+            last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                depth_end - depth_start).count();
 
-        int64_t elapsed = tm.elapsed_ms();
-        int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
-        uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
+            int64_t elapsed = tm.elapsed_ms();
+            int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
+            uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
 
-        auto pv_line = extractPV(board, depth);
-        std::string pv_str;
-        for (const auto& m : pv_line) pv_str += chess::uci::moveToUci(m) + " ";
-        if (pv_str.empty()) pv_str = chess::uci::moveToUci(best_move);
+            auto pv_line = extractPV(board, depth);
+            std::string pv_str;
+            for (const auto& m : pv_line) pv_str += chess::uci::moveToUci(m) + " ";
+            if (pv_str.empty()) pv_str = chess::uci::moveToUci(best_move);
 
-        std::string score_str;
-        if (best_score >= MATE_SCORE - 100) {
-            int mate_in = (MATE_SCORE - best_score + 1) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else if (best_score <= -MATE_SCORE + 100) {
-            int mate_in = -(MATE_SCORE + best_score) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else {
-            score_str = "cp " + std::to_string(best_score);
+            std::string score_str;
+            if (best_score >= MATE_SCORE - 100) {
+                int mate_in = (MATE_SCORE - best_score + 1) / 2;
+                score_str = "mate " + std::to_string(mate_in);
+            } else if (best_score <= -MATE_SCORE + 100) {
+                int mate_in = -(MATE_SCORE + best_score) / 2;
+                score_str = "mate " + std::to_string(mate_in);
+            } else {
+                score_str = "cp " + std::to_string(best_score);
+            }
+
+            if (!g_silent)
+                std::cout
+                    << "info score " << score_str
+                    << " depth " << depth
+                    << " nodes " << stats.nodes
+                    << " nps " << nps << " time "
+                    << elapsed << " pv " << pv_str << "\n";
         }
-
-        if (!g_silent)
-            std::cout
-                << "info score " << score_str
-                << " depth " << depth
-                << " nodes " << stats.nodes
-                << " nps " << nps << " time "
-                << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);
 
         if (g_policy.loaded &&
             depth >= POLICY_TM_MIN_DEPTH &&
-            node_limit <= 0 &&                    // skip fixed-nodes
-            tm.soft_limit_ms < tm.hard_limit_ms)  // skip pure movetime
+            node_limit <= 0 &&
+            tm.soft_limit_ms < tm.hard_limit_ms)
         {
             chess::Move pol_top;
             float pol_p = 0.f;
@@ -1055,15 +1061,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                 if (disagree) {
                     scale = POLICY_TM_DISAGREE;
-                    // disagreement + uncertainty → stretch a bit more
                     if (pol_p < POLICY_TM_UNCERTAIN) {
                         scale = 1.50;
                     }
                 } else if (pol_p >= POLICY_TM_AGREE_CONF) {
-                    // high-confidence agreement → save a little clock
                     scale = POLICY_TM_AGREE_S;
                 } else if (pol_p < POLICY_TM_UNCERTAIN) {
-                    // agreement but net is unsure → think a bit longer
                     scale = POLICY_TM_UNCERTAIN_S;
                 }
 
@@ -1083,11 +1086,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             } else {
                 tm.set_policy_time_scale(1.0);
             }
-        } else {
-            // Keep scale neutral outside the gate so a prior depth's stretch
-            // doesn't leak into node-limited or early depths.
-            // (Actually: once we pass MIN_DEPTH we always recompute; before
-            //  that, leave at 1.0 from init. No action needed here.)
         }
     }
 
