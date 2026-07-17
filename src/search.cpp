@@ -1039,6 +1039,56 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);
+
+        if (g_policy.loaded &&
+            depth >= POLICY_TM_MIN_DEPTH &&
+            node_limit <= 0 &&                    // skip fixed-nodes
+            tm.soft_limit_ms < tm.hard_limit_ms)  // skip pure movetime
+        {
+            chess::Move pol_top;
+            float pol_p = 0.f;
+            float pol_ent = 0.f;
+
+            if (g_policy.rootAdvice(board, pol_top, pol_p, &pol_ent)) {
+                double scale = 1.0;
+                const bool disagree = (pol_top != best_move);
+
+                if (disagree) {
+                    scale = POLICY_TM_DISAGREE;
+                    // disagreement + uncertainty → stretch a bit more
+                    if (pol_p < POLICY_TM_UNCERTAIN) {
+                        scale = 1.50;
+                    }
+                } else if (pol_p >= POLICY_TM_AGREE_CONF) {
+                    // high-confidence agreement → save a little clock
+                    scale = POLICY_TM_AGREE_S;
+                } else if (pol_p < POLICY_TM_UNCERTAIN) {
+                    // agreement but net is unsure → think a bit longer
+                    scale = POLICY_TM_UNCERTAIN_S;
+                }
+
+                tm.set_policy_time_scale(scale);
+
+                if (!g_silent) {
+                    std::cout << "info string policy_tm"
+                              << " depth " << depth
+                              << " scale " << scale
+                              << (disagree ? " disagree" : " agree")
+                              << " pol " << chess::uci::moveToUci(pol_top)
+                              << " (" << (pol_p * 100.f) << "%)"
+                              << " search " << chess::uci::moveToUci(best_move)
+                              << " ent " << pol_ent
+                              << std::endl;
+                }
+            } else {
+                tm.set_policy_time_scale(1.0);
+            }
+        } else {
+            // Keep scale neutral outside the gate so a prior depth's stretch
+            // doesn't leak into node-limited or early depths.
+            // (Actually: once we pass MIN_DEPTH we always recompute; before
+            //  that, leave at 1.0 from init. No action needed here.)
+        }
     }
 
 search_done:
