@@ -28,30 +28,20 @@ constexpr int POLICY_QUIET_WEIGHT  = 1024;
 constexpr int POLICY_MIN_DEPTH     = 6;
 
 constexpr int    POLICY_TM_MIN_DEPTH    = 6;
-<<<<<<< Updated upstream
-constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // top1 >= this + agree → less time
-constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;  // top1 <  this        → more time
-constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
-constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
-constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
-=======
 constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;
 constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
 constexpr double POLICY_TM_DISAGREE     = 1.35;
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
 constexpr double POLICY_TM_AGREE_S      = 0.88;
 
-constexpr int POLICY_PRUNE_MAX_DEPTH = 3;   // try 4 later if fixed-nodes OK
-// move_count >= POLICY_PRUNE_MOVE_BASE + depth
+constexpr int POLICY_PRUNE_MAX_DEPTH = 3;
 constexpr int POLICY_PRUNE_MOVE_BASE = 2;
-// need at least this many quiets to define a bottom quartile
 constexpr int POLICY_PRUNE_MIN_QUIETS = 4;
 
 // Zobrist rank cache
 constexpr int POLICY_RANK_CACHE_BITS = 16;
 constexpr int POLICY_RANK_CACHE_SIZE = 1 << POLICY_RANK_CACHE_BITS;
 constexpr int POLICY_RANK_CACHE_MAX_MOVES = 128;
->>>>>>> Stashed changes
 
 struct PolicyNet {
     bool loaded = false;
@@ -131,7 +121,7 @@ struct PolicyRankCache {
 extern PolicyNet g_policy;
 extern PolicyRankCache g_policy_rank_cache;
 
-// Fills out_rank[i] for legal moves of board; uses cache. Returns nq.
+// Fills out_rank[i] for legal moves of board; uses cache. Returns success.
 // out_rank must hold moves.size() ints (max 256).
 bool policyRanksForNode(const chess::Board& board, uint64_t hash,
                         const chess::Movelist& moves,
