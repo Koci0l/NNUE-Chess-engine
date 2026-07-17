@@ -28,6 +28,7 @@ constexpr int POLICY_QUIET_WEIGHT  = 1024;
 constexpr int POLICY_MIN_DEPTH     = 6;
 
 constexpr int    POLICY_TM_MIN_DEPTH    = 6;
+<<<<<<< Updated upstream
 constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // top1 >= this + agree → less time
 constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;  // top1 <  this        → more time
 constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
