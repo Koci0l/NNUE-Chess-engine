@@ -28,9 +28,6 @@ constexpr int POLICY_SEE_TH      = -108;
 constexpr int POLICY_ROOT_LMR_MIN_DEPTH = 3;
 constexpr int POLICY_ROOT_LMR_TOP       = 3;
 
-constexpr int POLICY_ROOT_LMR_MIN_DEPTH = 3;
-constexpr int POLICY_ROOT_LMR_TOP       = 3;
-
 // Idea A: in-tree policy LMR (selective, depth-gated)
 constexpr int POLICY_INTERNAL_LMR_MIN_DEPTH = 8;
 constexpr int POLICY_INTERNAL_LMR_TOP       = 3;
