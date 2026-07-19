@@ -558,6 +558,32 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     // Path A: never reorder with policy in the tree
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
+    chess::Movelist pol_legals;
+    int  pol_rank[256];
+    int  pol_nq      = 0;
+    bool use_pol_lmr = false;
+    for (int i = 0; i < 256; ++i) pol_rank[i] = -1;
+
+    if (g_policy.loaded &&
+        depth >= POLICY_INTERNAL_LMR_MIN_DEPTH &&
+        !in_check && !in_singular_search)
+    {
+        chess::movegen::legalmoves(pol_legals, board);
+        const int nleg = static_cast<int>(pol_legals.size());
+        if (nleg > POLICY_INTERNAL_MIN_LEGALS && nleg <= 256) {
+            g_policy.rankLegalQuiets(board, pol_legals, pol_rank, &pol_nq);
+            use_pol_lmr = (pol_nq >= 4);
+        }
+    }
+
+    auto polRank = [&](const chess::Move& m) -> int {
+        if (!use_pol_lmr) return -1;
+        for (int i = 0; i < static_cast<int>(pol_legals.size()); ++i) {
+            if (pol_legals[i] == m) return pol_rank[i];
+        }
+        return -1;
+    };
+
     chess::Move best_move;
     int best_score = -MATE_SCORE;
     int original_alpha = alpha;
@@ -655,6 +681,18 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
             // Allow history to cancel LMR entirely (reduction == 0)
+                    if (use_pol_lmr) {
+                        const int pr = polRank(move);
+                        if (pr >= 0) {
+                            if (pr < POLICY_INTERNAL_LMR_TOP) {
+                                reduction = std::max(0, reduction - 1);
+                            }
+                            if (pol_nq >= 4 && pr >= (pol_nq / 2)) {
+                                reduction += 1;
+                            }
+                        }
+                    }
+        
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
