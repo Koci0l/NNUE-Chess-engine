@@ -985,6 +985,24 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 root_move_count++;
             }
 
+            if (use_policy_lmr && policy_nq >= 4 && depth >= 4) {
+                for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
+                    const int pr = policy_rank[i];
+                    if (pr < 0 || pr >= POLICY_ROOT_LMR_TOP) continue;
+
+                    const chess::Move& pm = root_legals[i];
+                    if (!isQuietMove(board, pm)) continue;
+                    if (pm == depth_best_move) continue;
+
+                    int bonus = POLICY_HIST_BONUS_MAX * (POLICY_ROOT_LMR_TOP - pr)
+                              / POLICY_ROOT_LMR_TOP;
+                    bonus = bonus * std::max(1, 12 - depth) / 8;
+                    if (bonus <= 0) continue;
+
+                    g_butterflyHistory.update(board.sideToMove(), pm.from(), pm.to(), bonus);
+                }
+            }
+
             if (score <= aspiration_alpha && aspiration_alpha > -MATE_SCORE) {
                 delta *= 2;
                 best_score = score;
@@ -1040,10 +1058,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         tm.update_stability(best_move);
 
+
+        // === Time management (unchanged) ===
         if (g_policy.loaded &&
             depth >= POLICY_TM_MIN_DEPTH &&
-            node_limit <= 0 &&                    // skip fixed-nodes
-            tm.soft_limit_ms < tm.hard_limit_ms)  // skip pure movetime
+            node_limit <= 0 &&
+            tm.soft_limit_ms < tm.hard_limit_ms)
         {
             chess::Move pol_top;
             float pol_p = 0.f;
@@ -1055,15 +1075,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                 if (disagree) {
                     scale = POLICY_TM_DISAGREE;
-                    // disagreement + uncertainty → stretch a bit more
                     if (pol_p < POLICY_TM_UNCERTAIN) {
                         scale = 1.50;
                     }
                 } else if (pol_p >= POLICY_TM_AGREE_CONF) {
-                    // high-confidence agreement → save a little clock
                     scale = POLICY_TM_AGREE_S;
                 } else if (pol_p < POLICY_TM_UNCERTAIN) {
-                    // agreement but net is unsure → think a bit longer
                     scale = POLICY_TM_UNCERTAIN_S;
                 }
 
@@ -1083,17 +1100,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             } else {
                 tm.set_policy_time_scale(1.0);
             }
-        } else {
-            // Keep scale neutral outside the gate so a prior depth's stretch
-            // doesn't leak into node-limited or early depths.
-            // (Actually: once we pass MIN_DEPTH we always recompute; before
-            //  that, leave at 1.0 from init. No action needed here.)
         }
-    }
+
+    } // === end for (depth) loop ===
 
 search_done:
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
-    std::cerr << "info string total nodes searched " << stats.nodes << std::endl;
+    std::cerr << "info string total nodes: " << stats.nodes << std::endl;
     return best_move;
 }
