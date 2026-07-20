@@ -932,28 +932,41 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     int new_depth = depth - 1;
                     int reduction = 0;
 
-                    // Path A: root LMR modulated by policy quiet rank
+                    // root LMR modulated by policy quiet rank
                     if (use_policy_lmr &&
                         root_is_quiet &&
                         new_depth >= 1 &&
                         depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
 
-                        reduction = lmr_reductions[std::min(depth, 63)]
-                                                   [std::min(root_move_count, 63)];
+                        int base_red = lmr_reductions[std::min(depth, 63)]
+                                                     [std::min(root_move_count, 63)];
 
+                        int pol_adj = 0;
                         const int pr = findPolicyRank(move);
+
                         if (pr >= 0) {
-                            // Top policy quiets: less reduction
-                            if (pr < POLICY_ROOT_LMR_TOP) {
-                                reduction = std::max(0, reduction - 1);
-                            }
-                            // Bottom half of quiets: extra reduction
-                            if (policy_nq >= 4 && pr >= (policy_nq / 2)) {
-                                reduction += 1;
-                            }
+                            // --- Condition 1: policy rank (existing) ---
+                            if (pr < POLICY_ROOT_LMR_TOP)
+                                pol_adj -= 1;
+                            if (policy_nq >= 4 && pr >= (policy_nq / 2))
+                                pol_adj += 1;
+
+                            // --- Condition 2: policy + history agreement ---
+                            int root_hist = getCombinedHist(
+                                board.sideToMove(), move, root_piece, 0, ss);
+
+                            if (pr < POLICY_ROOT_LMR_TOP && root_hist > 2000)
+                                pol_adj -= 1;   // both say good → stronger
+                            if (policy_nq >= 4 && pr >= (policy_nq / 2) && root_hist < -2000)
+                                pol_adj += 1;   // both say bad → stronger
+
+                            // --- Condition 3: depth decay ---
+                            // Full effect at depth 3-4, fades to ~0 by depth 14
+                            pol_adj = pol_adj * std::max(1, 14 - depth) / 10;
                         }
 
-                        reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
+                        reduction = std::clamp(base_red + pol_adj,
+                                               0, std::max(0, new_depth - 1));
                     }
 
                     // PVS null window (possibly reduced)
