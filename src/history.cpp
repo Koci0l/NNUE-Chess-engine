@@ -7,6 +7,8 @@ CaptureHistory g_captureHistory;
 ContinuationHistory g_contHist1ply;
 ContinuationHistory g_contHist2ply;
 CorrectionHistory g_correctionHistory;
+CorrectionHistory g_pawnCorrectionHistory;
+CorrectionHistory g_materialCorrectionHistory;
 
 void ButterflyHistory::age() {
     for (int c = 0; c < 2; ++c) {
