@@ -182,3 +182,5 @@ extern CaptureHistory g_captureHistory;
 extern ContinuationHistory g_contHist1ply;
 extern ContinuationHistory g_contHist2ply;
 extern CorrectionHistory g_correctionHistory;
+extern CorrectionHistory g_pawnCorrectionHistory;
+extern CorrectionHistory g_materialCorrectionHistory;

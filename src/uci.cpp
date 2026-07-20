@@ -71,6 +71,8 @@ static void run_bench(ThreadInfo& thread) {
     g_contHist1ply.clear();
     g_contHist2ply.clear();
     g_correctionHistory.clear();
+    g_pawnCorrectionHistory.clear();
+    g_materialCorrectionHistory.clear();
 
     g_silent = true;
     uint64_t total_nodes = 0;
@@ -172,6 +174,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             g_contHist1ply.clear();
             g_contHist2ply.clear();
             g_correctionHistory.clear();
+            g_pawnCorrectionHistory.clear();
+            g_materialCorrectionHistory.clear();
 
         } else if (command == "position") {
             size_t moves_idx = 0;
