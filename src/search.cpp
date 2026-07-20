@@ -52,18 +52,24 @@ inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
 
-static inline int correctedEval(int raw_eval, chess::Color side, uint64_t hash) {
-    return std::clamp(raw_eval + g_correctionHistory.get(side, hash),
-                      -MATE_SCORE + 1, MATE_SCORE - 1);
+static inline int correctedEval(int raw_eval, chess::Color side,
+                                uint64_t hash, uint64_t pawn_hash, uint64_t mat_hash) {
+    int corr = g_correctionHistory.get(side, hash)
+             + g_pawnCorrectionHistory.get(side, pawn_hash)
+             + g_materialCorrectionHistory.get(side, mat_hash);
+    return std::clamp(raw_eval + corr, -MATE_SCORE + 1, MATE_SCORE - 1);
 }
 
-static inline void updateCorrection(chess::Color side, uint64_t hash,
+static inline void updateCorrection(chess::Color side,
+                                    uint64_t hash, uint64_t pawn_hash, uint64_t mat_hash,
                                     int depth, int raw_static_eval, int score) {
     if (depth < 4) return;
     if (std::abs(raw_static_eval) >= MATE_SCORE - 200) return;
     if (std::abs(score) >= MATE_SCORE - 200) return;
     int diff = std::clamp(score - raw_static_eval, -64, 64);
     g_correctionHistory.update(side, hash, diff, depth);
+    g_pawnCorrectionHistory.update(side, pawn_hash, diff, depth);
+    g_materialCorrectionHistory.update(side, mat_hash, diff, depth);
 }
 
 bool isDrawByRepetition(const chess::Board& board) {
@@ -410,9 +416,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int static_eval = 0;
     bool improving = false;
 
+    const uint64_t pawn_hash = getPawnHash(board);
+    const uint64_t mat_hash  = getMaterialHash(board);
+
     if (!in_check) {
         raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
-        static_eval = correctedEval(raw_static_eval, board.sideToMove(), hash);
+        static_eval = correctedEval(raw_static_eval, board.sideToMove(),
+                                    hash, pawn_hash, mat_hash);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
             if (tt_flag == TT_EXACT ||
@@ -797,7 +807,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool exact_node = best_score > original_alpha && best_score < beta;
     if (!in_singular_search && !in_check && exact_node &&
         best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, hash, depth, raw_static_eval, best_score);
+        updateCorrection(side_to_move, hash, pawn_hash, mat_hash,
+                         depth, raw_static_eval, best_score);
     }
 
     if (!in_singular_search) {
@@ -824,6 +835,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_contHist1ply.age();
         g_contHist2ply.age();
         g_correctionHistory.age();
+        g_pawnCorrectionHistory.age();
+        g_materialCorrectionHistory.age();
     }
 
     chess::Move best_move = moves[0];
@@ -932,30 +945,35 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     int new_depth = depth - 1;
                     int reduction = 0;
 
-                    // Path A: root LMR modulated by policy quiet rank
-                    if (use_policy_lmr &&
-                        root_is_quiet &&
-                        new_depth >= 1 &&
-                        depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
-
-                        reduction = lmr_reductions[std::min(depth, 63)]
-                                                   [std::min(root_move_count, 63)];
-
+                    if (use_policy_lmr && root_is_quiet) {
                         const int pr = findPolicyRank(move);
-                        if (pr >= 0) {
-                            // Top policy quiets: less reduction
-                            if (pr < POLICY_ROOT_LMR_TOP) {
-                                reduction = std::max(0, reduction - 1);
-                            }
-                            // Bottom half of quiets: extra reduction
-                            if (policy_nq >= 4 && pr >= (policy_nq / 2)) {
-                                reduction += 1;
-                            }
+
+                        // CUT THE TREE: skip bottom-quartile quiets at low depths
+                        // Safe because: TT move from prev iteration is always searched first
+                        if (pr >= 0 && policy_nq >= 8 &&
+                            depth <= 8 &&
+                            pr >= (policy_nq * 3) / 4) {
+                            board.unmakeMove(move);
+                            thread.accumulatorStack.pop();
+                            root_move_count++;
+                            continue;
                         }
 
-                        reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
-                    }
+                        // LMR modulation — full strength, no decay
+                        if (new_depth >= 1 && depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
+                            reduction = lmr_reductions[std::min(depth, 63)]
+                                                       [std::min(root_move_count, 63)];
 
+                            if (pr >= 0) {
+                                if (pr < POLICY_ROOT_LMR_TOP)
+                                    reduction = std::max(0, reduction - 1);
+                                if (policy_nq >= 4 && pr >= (policy_nq / 2))
+                                    reduction += 1;
+                            }
+
+                            reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
+                        }
+                    }
                     // PVS null window (possibly reduced)
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
