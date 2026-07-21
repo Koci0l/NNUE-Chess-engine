@@ -24,105 +24,6 @@ void initLMR() {
     }
 }
 
-// ============================================================================
-// Policy Forward Pruning constants
-// ============================================================================
-constexpr int    PFP_MIN_DEPTH        = 4;
-constexpr int    PFP_MAX_DEPTH        = 10;
-constexpr float  PFP_ENTROPY_GATE     = 0.82f;
-constexpr float  PFP_LMR_TOP_PCT      = 0.15f;
-constexpr float  PFP_LMR_TAIL_PCT     = 0.55f;
-constexpr int    PFP_MAX_QUIETS       = 256;
-
-// ============================================================================
-// Node-level policy cache
-// ============================================================================
-struct NodePolicyCache {
-    bool  valid        = false;
-    int   nq           = 0;
-    float norm_entropy = 1.0f;
-    float top1_prob    = 0.0f;
-    int   quiet_rank[PFP_MAX_QUIETS];
-    float quiet_prob[PFP_MAX_QUIETS];
-
-    NodePolicyCache() {
-        for (int i = 0; i < PFP_MAX_QUIETS; ++i) {
-            quiet_rank[i] = -1;
-            quiet_prob[i] = 0.0f;
-        }
-    }
-};
-
-static bool computeNodePolicy(const chess::Board& board,
-                              const chess::Movelist& legals,
-                              NodePolicyCache& npc) {
-    npc.valid = false;
-    npc.nq = 0;
-    npc.norm_entropy = 1.0f;
-    npc.top1_prob = 0.0f;
-
-    if (!g_policy.loaded) return false;
-
-    const int n = static_cast<int>(legals.size());
-    if (n < 3 || n > PFP_MAX_QUIETS) return false;
-
-    float logits[PFP_MAX_QUIETS];
-    if (!g_policy.logitsLegalMoves(board, legals, logits)) return false;
-
-    int quiet_idx[PFP_MAX_QUIETS];
-    int nq = 0;
-    float mx = -1e30f;
-
-    for (int i = 0; i < n; ++i) {
-        npc.quiet_rank[i] = -1;
-        npc.quiet_prob[i] = 0.0f;
-        if (isQuietMove(board, legals[i])) {
-            quiet_idx[nq++] = i;
-            mx = std::max(mx, logits[i]);
-        }
-    }
-
-    if (nq < 3) return false;
-
-    npc.nq = nq;
-
-    float sum = 0.0f;
-    for (int q = 0; q < nq; ++q) {
-        float p = std::exp(logits[quiet_idx[q]] - mx);
-        npc.quiet_prob[quiet_idx[q]] = p;
-        sum += p;
-    }
-
-    float inv_sum = (sum > 0.0f) ? (1.0f / sum) : 0.0f;
-    float entropy = 0.0f;
-    float best_p = 0.0f;
-
-    for (int q = 0; q < nq; ++q) {
-        float p = npc.quiet_prob[quiet_idx[q]] * inv_sum;
-        npc.quiet_prob[quiet_idx[q]] = p;
-        if (p > 1e-12f) entropy -= p * std::log(p);
-        best_p = std::max(best_p, p);
-    }
-
-    npc.top1_prob = best_p;
-    npc.norm_entropy = (nq > 1) ? (entropy / std::log(static_cast<float>(nq))) : 0.0f;
-
-    int order[PFP_MAX_QUIETS];
-    for (int q = 0; q < nq; ++q) order[q] = q;
-    std::sort(order, order + nq, [&](int a, int b) {
-        return npc.quiet_prob[quiet_idx[a]] > npc.quiet_prob[quiet_idx[b]];
-    });
-    for (int r = 0; r < nq; ++r) {
-        npc.quiet_rank[quiet_idx[order[r]]] = r;
-    }
-
-    npc.valid = true;
-    return true;
-}
-
-// ============================================================================
-// Existing constants
-// ============================================================================
 constexpr int SE_MIN_DEPTH = 5;
 constexpr int SE_DEPTH_TOL = 3;
 constexpr int SE_MARGIN_PER_DEPTH = 2;
@@ -454,7 +355,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
 }
 
 // ============================================================================
-// Alpha-Beta Search with Policy Forward Pruning
+// Alpha-Beta Search
 // ============================================================================
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
@@ -666,29 +567,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     }
 
     // ========================================================================
-    // POLICY FORWARD PRUNING: Compute node policy at gated nodes
-    // ========================================================================
-    NodePolicyCache npc;
-    bool use_pfp = false;
-
-    if (g_policy.loaded &&
-        !in_check &&
-        !in_singular_search &&
-        !is_pv_node &&
-        depth >= PFP_MIN_DEPTH &&
-        depth <= PFP_MAX_DEPTH)
-    {
-        chess::Movelist node_legals;
-        chess::movegen::legalmoves(node_legals, board);
-        if (static_cast<int>(node_legals.size()) >= 4 &&
-            static_cast<int>(node_legals.size()) <= PFP_MAX_QUIETS) {
-            if (computeNodePolicy(board, node_legals, npc)) {
-                use_pfp = (npc.norm_entropy < PFP_ENTROPY_GATE);
-            }
-        }
-    }
-
-    // ========================================================================
     // Move Loop
     // ========================================================================
     chess::Move counter_move = g_counterMoves.get(previous_move);
@@ -705,7 +583,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     CaptureSearchInfo captures_searched[MAX_CAPTURES_TRACKED];
     int captures_count = 0;
     int move_count = 0;
-    int quiets_seen_for_pfp = 0;
     bool had_non_excluded_move = false;
 
     while (true) {
@@ -740,40 +617,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (hist_score < -2000 * depth) continue;
         }
 
-        // ====================================================================
-        // POLICY FORWARD PRUNING: Hard-prune tail quiets
-        // ====================================================================
-        if (use_pfp && is_quiet && move != tt_move &&
-            !g_killerMoves.is_killer(ply_from_root, move) &&
-            move != counter_move &&
-            best_score > -MATE_SCORE + 100)
-        {
-            int pfp_quiet_limit;
-            float sharpness = 1.0f - npc.norm_entropy;
-
-            // Sharp policy: search fewer quiets. Flat policy: search more.
-            float search_fraction = 0.30f + 0.50f * (1.0f - sharpness);
-            pfp_quiet_limit = std::max(3, static_cast<int>(npc.nq * search_fraction));
-
-            if (quiets_seen_for_pfp >= pfp_quiet_limit) {
-                continue;  // HARD PRUNE
-            }
-        }
-
-        // --- Late Move Pruning (policy-aware) ---
+        // --- Late Move Pruning ---
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
-            is_quiet && move != tt_move && best_score > -MATE_SCORE + 100) {
-
-            int lmp_limit;
-            if (use_pfp) {
-                float sharpness = 1.0f - npc.norm_entropy;
-                float width = 2.0f + 3.0f * (1.0f - sharpness);
-                lmp_limit = static_cast<int>(width + depth * (1.0f + 1.5f * (1.0f - sharpness)));
-            } else {
-                lmp_limit = 3 + depth * depth;
-            }
-
-            if (move_count >= lmp_limit) break;
+            is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
+            move_count >= 3 + depth * depth) {
+            break;
         }
 
         // --- Singular Extension ---
@@ -787,7 +635,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
 
         move_count++;
-        if (is_quiet) quiets_seen_for_pfp++;
 
         chess::Piece moved_piece = board.at(move.from());
 
@@ -832,20 +679,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
-
-            // ================================================================
-            // POLICY LMR: Continuous adjustment based on quiet ordering
-            // ================================================================
-            if (use_pfp && npc.nq >= 4) {
-                float quiet_percentile = static_cast<float>(quiets_seen_for_pfp - 1) /
-                                         static_cast<float>(std::max(1, npc.nq - 1));
-
-                if (quiet_percentile < PFP_LMR_TOP_PCT) {
-                    reduction -= 1;
-                } else if (quiet_percentile > PFP_LMR_TAIL_PCT) {
-                    reduction += 1;
-                }
-            }
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
@@ -994,6 +827,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     return best_score;
 }
 
+// ============================================================================
+// Root Search
+// ============================================================================
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
                    int64_t node_limit, int* score_out, uint64_t* nodes_out) {
     chess::Movelist moves;
@@ -1013,24 +849,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_correctionHistory.age();
     }
 
-    // === POLICY: Initialize best_move from policy top-1 ===
-    // This makes depth-1 search start from the policy's favorite,
-    // stabilizing the entire iterative deepening process.
     chess::Move best_move = moves[0];
-    if (g_policy.loaded) {
-        chess::Move pol_top;
-        float pol_p;
-        if (g_policy.rootAdvice(board, pol_top, pol_p)) {
-            // Verify it's legal
-            for (const auto& m : moves) {
-                if (m == pol_top) {
-                    best_move = pol_top;
-                    break;
-                }
-            }
-        }
-    }
-
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
 
@@ -1063,6 +882,35 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         int delta = 25;
         int aspiration_alpha, aspiration_beta;
 
+        // ==============================================================
+        // Policy: compute ONCE per depth, BEFORE the aspiration loop.
+        // This is the key NPS fix — previously this was inside while(true)
+        // and ran 2-3x per depth on aspiration re-searches.
+        // ==============================================================
+        chess::Movelist root_legals;
+        chess::movegen::legalmoves(root_legals, board);
+        int policy_rank[256];
+        int policy_nq = 0;
+        for (int i = 0; i < 256; ++i) policy_rank[i] = -1;
+
+        const bool use_policy_lmr =
+            g_policy.loaded &&
+            depth >= POLICY_ROOT_LMR_MIN_DEPTH &&
+            root_legals.size() > 1 &&
+            static_cast<int>(root_legals.size()) <= 256;
+
+        if (use_policy_lmr) {
+            g_policy.rankLegalQuiets(board, root_legals, policy_rank, &policy_nq);
+        }
+
+        auto findPolicyRank = [&](const chess::Move& m) -> int {
+            if (!use_policy_lmr || policy_nq <= 0) return -1;
+            for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
+                if (root_legals[i] == m) return policy_rank[i];
+            }
+            return -1;
+        };
+
         while (true) {
             if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
                 aspiration_alpha = std::max(-MATE_SCORE, best_score - delta);
@@ -1079,31 +927,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
             MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/false);
-
-            // === POLICY: Compute quiet ranks ONCE per depth ===
-            chess::Movelist root_legals;
-            chess::movegen::legalmoves(root_legals, board);
-            int policy_rank[256];
-            int policy_nq = 0;
-            for (int i = 0; i < 256; ++i) policy_rank[i] = -1;
-
-            const bool use_policy_lmr =
-                g_policy.loaded &&
-                depth >= POLICY_ROOT_LMR_MIN_DEPTH &&
-                root_legals.size() > 1 &&
-                static_cast<int>(root_legals.size()) <= 256;
-
-            if (use_policy_lmr) {
-                g_policy.rankLegalQuiets(board, root_legals, policy_rank, &policy_nq);
-            }
-
-            auto findPolicyRank = [&](const chess::Move& m) -> int {
-                if (!use_policy_lmr || policy_nq <= 0) return -1;
-                for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
-                    if (root_legals[i] == m) return policy_rank[i];
-                }
-                return -1;
-            };
 
             int root_move_count = 0;
 
@@ -1135,26 +958,25 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     int new_depth = depth - 1;
                     int reduction = 0;
 
-                    // ==============================================
-                    // ROOT LMR: Three-tier policy system
-                    // ==============================================
-                    if (use_policy_lmr && root_is_quiet && new_depth >= 1) {
+                    // Root LMR modulated by policy quiet rank
+                    if (use_policy_lmr &&
+                        root_is_quiet &&
+                        new_depth >= 1 &&
+                        depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
+
                         reduction = lmr_reductions[std::min(depth, 63)]
                                                   [std::min(root_move_count, 63)];
 
                         const int pr = findPolicyRank(move);
-                        if (pr >= 0 && policy_nq >= 4) {
-                            if (pr == 0) {
-                                // ELITE: Policy top-1. Full depth. No reduction.
-                                reduction = 0;
-                            } else if (pr <= 2) {
-                                // STRONG: Policy top-3. Reduce 1 less than normal.
+                        if (pr >= 0) {
+                            // Top policy quiets: less reduction
+                            if (pr < POLICY_ROOT_LMR_TOP) {
                                 reduction = std::max(0, reduction - 1);
-                            } else if (pr >= policy_nq * 3 / 4) {
-                                // TAIL: Bottom 25%. Extra reduction.
+                            }
+                            // Bottom half of quiets: extra reduction
+                            if (policy_nq >= 4 && pr >= (policy_nq / 2)) {
                                 reduction += 1;
                             }
-                            // else: NORMAL tier. Standard LMR, no adjustment.
                         }
 
                         reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
@@ -1245,7 +1067,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         tm.update_stability(best_move);
 
-        // --- Policy Time Management (unchanged) ---
+        // --- Policy Time Management ---
         if (g_policy.loaded &&
             depth >= POLICY_TM_MIN_DEPTH &&
             node_limit <= 0 &&
