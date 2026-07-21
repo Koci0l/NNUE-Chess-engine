@@ -1,7 +1,6 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
-// NOTE: no policy.h — Path A does not use policy in the picker
 
 #include <algorithm>
 #include <cstring>
@@ -113,8 +112,31 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
-    // Path A: pure history — no policy bonus
-    return hist + cont1 + cont2;
+    int score = hist + cont1 + cont2;
+
+    // ---- Policy ordering bonus (root only, zero overhead in-tree) ----
+    // policy_rel[i] = ln(p_quiet * nq): positive = policy likes it,
+    // negative = policy dislikes it, zero = average / flat position.
+    // Weight ~512 means a strong favorite (rel ≈ +2) gets +1024,
+    // a terrible move (rel ≈ -3) gets -1500 (clamped).
+    if (m_ctx.policy_order_weight > 0 &&
+        m_ctx.policy_rel != nullptr &&
+        m_ctx.policy_legals != nullptr) {
+        const auto& legals = *m_ctx.policy_legals;
+        for (int i = 0; i < static_cast<int>(legals.size()); ++i) {
+            if (legals[i] == move) {
+                float rel = m_ctx.policy_rel[i];
+                if (rel > -999.0f) {  // valid quiet (not POLICY_REL_NONE)
+                    int bonus = static_cast<int>(m_ctx.policy_order_weight * rel);
+                    bonus = std::clamp(bonus, -1500, 1500);
+                    score += bonus;
+                }
+                break;
+            }
+        }
+    }
+
+    return score;
 }
 
 void MovePicker::scoreCaptures() {

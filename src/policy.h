@@ -25,36 +25,20 @@ constexpr int POLICY_SEE_TH      = -108;
 // ============================================================================
 // Root LMR: lift-based continuous adjustment
 // ============================================================================
-// For each quiet root move, compute the "lift" signal:
-//
-//   p_quiet(m) = softmax over quiets only
-//   rel(m)     = ln( p_quiet(m) * nq )
-//
-// Properties:
-//   - Uniform position (all quiets equal): rel = 0 for every move → adj = 0
-//     (self-calibrating: flat policy → zero distortion, no entropy gate needed)
-//   - Sharp position: favorite gets rel >> 0, tail gets rel << 0
-//   - By Jensen's inequality E[rel] <= 0, so the default bias is mildly
-//     "reduce more", with a few moves pulled negative ("reduce less")
-//
-// LMR adjustment:
-//   adj = clamp( round( -POLICY_LMR_K * rel ), MIN_ADJ, MAX_ADJ )
-//
-// With K = 0.75:
-//   rel = +2.1  (dominant favorite, ~80% of 10 quiets) → adj = -2
-//   rel = +1.1  (strong favorite,  ~30%)               → adj = -1
-//   rel =  0.0  (average quiet)                        → adj =  0
-//   rel = -1.2  (below average,     ~3%)               → adj = +1
-//   rel = -3.0  (terrible,         ~0.5%)              → adj = +2
-//   rel = -4.6  (garbage,          ~0.1%)              → adj = +3
-//
-// SPSA-tune POLICY_LMR_K. Start at 0.75.
 constexpr int   POLICY_ROOT_LMR_MIN_DEPTH = 3;
 constexpr float POLICY_LMR_K              = 0.75f;
 constexpr int   POLICY_LMR_MIN_ADJ        = -2;
 constexpr int   POLICY_LMR_MAX_ADJ        = 3;
 constexpr int   POLICY_LMR_MIN_QUIETS     = 2;
 constexpr float POLICY_REL_NONE           = -1000.0f;
+
+// ============================================================================
+// Root quiet ordering: policy lift blended into history score
+// ============================================================================
+// quiet_score = history + cont1 + cont2 + POLICY_ORDER_WEIGHT * rel
+// rel = ln(p_quiet * nq): +2 strong favorite → +1024, -3 terrible → -1500
+// SPSA-tune in [256, 1024].  512 is a conservative starting point.
+constexpr int POLICY_ORDER_WEIGHT = 512;
 
 // Legacy
 constexpr int POLICY_QUIET_WEIGHT  = 1024;

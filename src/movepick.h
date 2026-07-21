@@ -5,15 +5,18 @@
 
 #include <vector>
 
-// Forward decls only if not already fully defined via types.h
-// SearchStack is defined in types.h
-
 struct MovePickerContext {
     chess::Move tt_move{};
     chess::Move counter_move{};
     chess::Color side_to_move{};
     int ply = 0;
     SearchStack* ss = nullptr;
+
+    // Optional policy ordering (root only).
+    // nullptr / 0 in-tree = zero overhead, no policy influence.
+    const float* policy_rel = nullptr;              // lift signal per root_legals index
+    const chess::Movelist* policy_legals = nullptr;  // root_legals for move→index lookup
+    int policy_order_weight = 0;                     // 0 = disabled
 
     MovePickerContext() = default;
 
@@ -41,7 +44,6 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
-    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 

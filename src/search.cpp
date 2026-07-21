@@ -775,6 +775,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
+            // Policy ordering: blend lift signal into root quiet scoring
+            if (use_policy_lmr && policy_nq >= POLICY_LMR_MIN_QUIETS) {
+                rootCtx.policy_rel         = policy_rel;
+                rootCtx.policy_legals      = &root_legals;
+                rootCtx.policy_order_weight = POLICY_ORDER_WEIGHT;
+            }
             MovePicker rootPicker(board, rootCtx, depth, false, /*use_policy=*/false);
 
             const bool root_in_check = board.inCheck();
