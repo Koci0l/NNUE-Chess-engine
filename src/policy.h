@@ -16,7 +16,7 @@
 
 constexpr int POLICY_PLANE       = 768;
 constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
-constexpr int POLICY_HL          = 1024;
+constexpr int POLICY_HL          = 128;
 constexpr int POLICY_HL_PAIR     = POLICY_HL / 2;    // 512
 constexpr int POLICY_MAX_ACTIVE  = 32;
 constexpr int POLICY_QA          = 128;
