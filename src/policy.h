@@ -23,38 +23,52 @@ constexpr int POLICY_PROMOS      = 4 * 22;           // 88
 constexpr int POLICY_SEE_TH      = -108;
 
 // ============================================================================
-// Root LMR: continuous logit-gap adjustment
+// Root LMR: lift-based continuous adjustment
 // ============================================================================
-// For each quiet root move:
-//   logit_gap = max_quiet_logit - move_logit          (>= 0)
-//   adj       = round(POLICY_LMR_SCALE * logit_gap - POLICY_LMR_OFFSET)
-//   adj       = clamp(adj, POLICY_LMR_MIN_ADJ, POLICY_LMR_MAX_ADJ)
-//   reduction += adj
+// For each quiet root move, compute the "lift" signal:
 //
-// With the defaults below:
-//   gap = 0   -> -1  (policy top quiet is protected)
-//   gap = 2   ->  0  (neutral)
-//   gap = 4-6 -> +1  (reduced more)
-//   gap >= 8  -> +2  (reduced most, clamped)
+//   p_quiet(m) = softmax over quiets only
+//   rel(m)     = ln( p_quiet(m) * nq )
 //
-// Tune POLICY_LMR_SCALE and POLICY_LMR_OFFSET via SPRT.
+// Properties:
+//   - Uniform position (all quiets equal): rel = 0 for every move → adj = 0
+//     (self-calibrating: flat policy → zero distortion, no entropy gate needed)
+//   - Sharp position: favorite gets rel >> 0, tail gets rel << 0
+//   - By Jensen's inequality E[rel] <= 0, so the default bias is mildly
+//     "reduce more", with a few moves pulled negative ("reduce less")
+//
+// LMR adjustment:
+//   adj = clamp( round( -POLICY_LMR_K * rel ), MIN_ADJ, MAX_ADJ )
+//
+// With K = 0.75:
+//   rel = +2.1  (dominant favorite, ~80% of 10 quiets) → adj = -2
+//   rel = +1.1  (strong favorite,  ~30%)               → adj = -1
+//   rel =  0.0  (average quiet)                        → adj =  0
+//   rel = -1.2  (below average,     ~3%)               → adj = +1
+//   rel = -3.0  (terrible,         ~0.5%)              → adj = +2
+//   rel = -4.6  (garbage,          ~0.1%)              → adj = +3
+//
+// SPSA-tune POLICY_LMR_K. Start at 0.75.
 constexpr int   POLICY_ROOT_LMR_MIN_DEPTH = 3;
-constexpr float POLICY_LMR_SCALE          = 0.25f;
-constexpr float POLICY_LMR_OFFSET         = 0.50f;
-constexpr int   POLICY_LMR_MIN_ADJ        = -1;
-constexpr int   POLICY_LMR_MAX_ADJ        = 2;
-constexpr int   POLICY_LMR_MIN_QUIETS     = 4;
+constexpr float POLICY_LMR_K              = 0.75f;
+constexpr int   POLICY_LMR_MIN_ADJ        = -2;
+constexpr int   POLICY_LMR_MAX_ADJ        = 3;
+constexpr int   POLICY_LMR_MIN_QUIETS     = 2;
+constexpr float POLICY_REL_NONE           = -1000.0f;
 
 // Legacy
 constexpr int POLICY_QUIET_WEIGHT  = 1024;
 constexpr int POLICY_MIN_DEPTH     = 6;
 
+// ============================================================================
+// 1a: policy-disagreement time management (root only, zero NPS tax in-tree)
+// ============================================================================
 constexpr int    POLICY_TM_MIN_DEPTH    = 6;
-constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;  // top1 >= this + agree -> less time
-constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;  // top1 <  this         -> more time
-constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
-constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
-constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
+constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;
+constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
+constexpr double POLICY_TM_DISAGREE     = 1.35;
+constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
+constexpr double POLICY_TM_AGREE_S      = 0.88;
 
 struct PolicyNet {
     bool loaded = false;
@@ -86,16 +100,11 @@ struct PolicyNet {
                           const chess::Movelist& moves,
                           float* out_logits) const;
 
-    // out_rank[i] aligned with moves[]:
-    //   -1 = capture / promo / failed index
-    //    0 .. nq-1 = quiet rank (0 best)
-    // *out_nq = number of quiets ranked (optional)
     bool rankLegalQuiets(const chess::Board& board,
                          const chess::Movelist& moves,
                          int* out_rank,
                          int* out_nq = nullptr) const;
 
-    // On success writes out_top / out_top1_prob; entropy_out optional.
     bool rootAdvice(const chess::Board& board,
                     chess::Move& out_top,
                     float& out_top1_prob,

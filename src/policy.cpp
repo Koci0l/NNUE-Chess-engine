@@ -23,10 +23,7 @@ static int popcount64(uint64_t x) {
     return __builtin_popcountll(x);
 #else
     int c = 0;
-    while (x) {
-        x &= x - 1;
-        ++c;
-    }
+    while (x) { x &= x - 1; ++c; }
     return c;
 #endif
 }
@@ -40,10 +37,7 @@ static int ctz64_local(uint64_t x) {
     return static_cast<int>(idx);
 #else
     int n = 0;
-    while ((x & 1ULL) == 0ULL) {
-        x >>= 1;
-        ++n;
-    }
+    while ((x & 1ULL) == 0ULL) { x >>= 1; ++n; }
     return n;
 #endif
 }
@@ -203,8 +197,7 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " l1_out_major=1"
               << " bytes=" << size
               << " mode=root_lmr+tm"
-              << " lmr_scale=" << POLICY_LMR_SCALE
-              << " lmr_offset=" << POLICY_LMR_OFFSET
+              << " lmr_k=" << POLICY_LMR_K
               << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
               << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
@@ -251,43 +244,23 @@ uint64_t PolicyNet::attacksBySide(const chess::Board& board, chess::Color side) 
     const Bitboard occ = board.occ();
     {
         uint64_t bb = board.pieces(PieceType::PAWN, side).getBits();
-        while (bb) {
-            const int sq = ctz64_local(bb);
-            bb &= bb - 1;
-            threats |= attacks::pawn(side, Square(sq)).getBits();
-        }
+        while (bb) { const int sq = ctz64_local(bb); bb &= bb - 1; threats |= attacks::pawn(side, Square(sq)).getBits(); }
     }
     {
         uint64_t bb = board.pieces(PieceType::KNIGHT, side).getBits();
-        while (bb) {
-            const int sq = ctz64_local(bb);
-            bb &= bb - 1;
-            threats |= attacks::knight(Square(sq)).getBits();
-        }
+        while (bb) { const int sq = ctz64_local(bb); bb &= bb - 1; threats |= attacks::knight(Square(sq)).getBits(); }
     }
     {
         uint64_t bb = board.pieces(PieceType::BISHOP, side).getBits();
-        while (bb) {
-            const int sq = ctz64_local(bb);
-            bb &= bb - 1;
-            threats |= attacks::bishop(Square(sq), occ).getBits();
-        }
+        while (bb) { const int sq = ctz64_local(bb); bb &= bb - 1; threats |= attacks::bishop(Square(sq), occ).getBits(); }
     }
     {
         uint64_t bb = board.pieces(PieceType::ROOK, side).getBits();
-        while (bb) {
-            const int sq = ctz64_local(bb);
-            bb &= bb - 1;
-            threats |= attacks::rook(Square(sq), occ).getBits();
-        }
+        while (bb) { const int sq = ctz64_local(bb); bb &= bb - 1; threats |= attacks::rook(Square(sq), occ).getBits(); }
     }
     {
         uint64_t bb = board.pieces(PieceType::QUEEN, side).getBits();
-        while (bb) {
-            const int sq = ctz64_local(bb);
-            bb &= bb - 1;
-            threats |= attacks::queen(Square(sq), occ).getBits();
-        }
+        while (bb) { const int sq = ctz64_local(bb); bb &= bb - 1; threats |= attacks::queen(Square(sq), occ).getBits(); }
     }
     threats |= attacks::king(board.kingSq(side)).getBits();
     return threats;
@@ -319,9 +292,7 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
             const uint64_t bit = 1ULL << sq;
             if (threats & bit)  feat += POLICY_PLANE;
             if (defences & bit) feat += POLICY_PLANE * 2;
-            if (nfeats < POLICY_MAX_ACTIVE) {
-                feats[nfeats++] = feat;
-            }
+            if (nfeats < POLICY_MAX_ACTIVE) feats[nfeats++] = feat;
         }
         uint64_t opps = board.pieces(kPts[p], nstm).getBits();
         while (opps) {
@@ -331,9 +302,7 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
             const uint64_t bit = 1ULL << sq;
             if (threats & bit)  feat += POLICY_PLANE;
             if (defences & bit) feat += POLICY_PLANE * 2;
-            if (nfeats < POLICY_MAX_ACTIVE) {
-                feats[nfeats++] = feat;
-            }
+            if (nfeats < POLICY_MAX_ACTIVE) feats[nfeats++] = feat;
         }
     }
 }
@@ -347,9 +316,7 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
     const int flip = hm ^ ((board.sideToMove() == chess::Color::BLACK) ? 56 : 0);
 
     const chess::Piece moved = board.at(m.from());
-    if (moved == chess::Piece::NONE) {
-        return -1;
-    }
+    if (moved == chess::Piece::NONE) return -1;
 
     const bool is_castle = (m.typeOf() == chess::Move::CASTLING);
     const bool is_promo  = (m.typeOf() == chess::Move::PROMOTION);
@@ -392,9 +359,7 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
         idx = offsets[5][64] + POLICY_PROMOS + 2 + (src % 8);
     } else {
         const int pc = static_cast<int>(moved.type());
-        if (pc < 0 || pc > 5) {
-            return -1;
-        }
+        if (pc < 0 || pc > 5) return -1;
         const uint64_t dest_bb = destinations[src][pc];
         const uint64_t below = dest_bb & ((1ULL << dst) - 1ULL);
         idx = offsets[pc][src] + popcount64(below);
@@ -418,9 +383,7 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
     }
 
     const int index = from_to * static_cast<int>(good_see) + idx;
-    if (index < 0 || index >= num_moves) {
-        return -1;
-    }
+    if (index < 0 || index >= num_moves) return -1;
     return index;
 }
 
@@ -436,9 +399,7 @@ static void computeHidden(const PolicyNet& net,
         const int f = feats[i];
         if (f < 0 || f >= POLICY_INPUT_SIZE) continue;
         const float* row = net.l0w.data() + size_t(f) * size_t(POLICY_HL);
-        for (int j = 0; j < POLICY_HL; ++j) {
-            h0[j] += row[j];
-        }
+        for (int j = 0; j < POLICY_HL; ++j) h0[j] += row[j];
     }
     for (int i = 0; i < POLICY_HL_PAIR; ++i) {
         h1[i] = crelu01(h0[i]) * crelu01(h0[i + POLICY_HL_PAIR]);
@@ -449,13 +410,10 @@ static float logitForMoveIndex(const PolicyNet& net, const float* h1, int mi) {
     float logit = net.l1b[static_cast<size_t>(mi)];
     if (net.l1_out_major) {
         const float* row = net.l1w.data() + size_t(mi) * size_t(POLICY_HL_PAIR);
-        for (int k = 0; k < POLICY_HL_PAIR; ++k) {
-            logit += h1[k] * row[k];
-        }
+        for (int k = 0; k < POLICY_HL_PAIR; ++k) logit += h1[k] * row[k];
     } else {
-        for (int k = 0; k < POLICY_HL_PAIR; ++k) {
+        for (int k = 0; k < POLICY_HL_PAIR; ++k)
             logit += h1[k] * net.l1w[size_t(k) * size_t(net.num_moves) + size_t(mi)];
-        }
     }
     return logit;
 }
@@ -464,7 +422,7 @@ static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
     if (m.typeOf() == chess::Move::PROMOTION) return false;
     if (m.typeOf() == chess::Move::ENPASSANT) return false;
     if (board.at(m.to()) != chess::Piece::NONE) return false;
-    return true; // includes castling
+    return true;
 }
 
 // ============================================================================
@@ -473,9 +431,7 @@ static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
 bool PolicyNet::logitsLegalMoves(const chess::Board& board,
                                  const chess::Movelist& moves,
                                  float* out_logits) const {
-    if (!loaded || moves.empty()) {
-        return false;
-    }
+    if (!loaded || moves.empty()) return false;
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
     collectFeatures(board, feats, nfeats);
@@ -483,10 +439,7 @@ bool PolicyNet::logitsLegalMoves(const chess::Board& board,
     computeHidden(*this, feats, nfeats, h1);
     for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
         const int mi = mapMoveToIndex(board, moves[i]);
-        if (mi < 0) {
-            out_logits[i] = -1e9f;
-            continue;
-        }
+        if (mi < 0) { out_logits[i] = -1e9f; continue; }
         out_logits[i] = logitForMoveIndex(*this, h1, mi);
     }
     return true;
@@ -495,17 +448,12 @@ bool PolicyNet::logitsLegalMoves(const chess::Board& board,
 bool PolicyNet::scoreLegalMoves(const chess::Board& board,
                                 const chess::Movelist& moves,
                                 float* out_probs) const {
-    if (!logitsLegalMoves(board, moves, out_probs)) {
-        return false;
-    }
+    if (!logitsLegalMoves(board, moves, out_probs)) return false;
     const int n = static_cast<int>(moves.size());
     float mx = out_probs[0];
     for (int i = 1; i < n; ++i) mx = std::max(mx, out_probs[i]);
     float sum = 0.f;
-    for (int i = 0; i < n; ++i) {
-        out_probs[i] = std::exp(out_probs[i] - mx);
-        sum += out_probs[i];
-    }
+    for (int i = 0; i < n; ++i) { out_probs[i] = std::exp(out_probs[i] - mx); sum += out_probs[i]; }
     const float inv = (sum > 0.f) ? (1.f / sum) : 0.f;
     for (int i = 0; i < n; ++i) out_probs[i] *= inv;
     return true;
@@ -516,13 +464,9 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
                                 int* out_rank,
                                 int* out_nq) const {
     const int n = static_cast<int>(moves.size());
-    for (int i = 0; i < n; ++i) {
-        out_rank[i] = -1;
-    }
+    for (int i = 0; i < n; ++i) out_rank[i] = -1;
     if (out_nq) *out_nq = 0;
-    if (!loaded || n <= 0) {
-        return false;
-    }
+    if (!loaded || n <= 0) return false;
 
     int quiet_i[256];
     float logits[256];
@@ -533,9 +477,7 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
         quiet_i[nq++] = i;
     }
     if (out_nq) *out_nq = nq;
-    if (nq <= 0) {
-        return true;
-    }
+    if (nq <= 0) return true;
 
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
@@ -548,15 +490,11 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
         logits[q] = (mi >= 0) ? logitForMoveIndex(*this, h1, mi) : -1e9f;
     }
 
-    // argsort desc by logit
     int order[256];
     for (int q = 0; q < nq; ++q) order[q] = q;
-    std::sort(order, order + nq, [&](int a, int b) {
-        return logits[a] > logits[b];
-    });
+    std::sort(order, order + nq, [&](int a, int b) { return logits[a] > logits[b]; });
     for (int rank = 0; rank < nq; ++rank) {
-        const int q = order[rank];
-        out_rank[quiet_i[q]] = rank; // 0 = best policy quiet
+        out_rank[quiet_i[order[rank]]] = rank;
     }
     return true;
 }
@@ -577,14 +515,10 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
     chess::movegen::legalmoves(moves, board);
     if (moves.empty()) return false;
 
-    // stack buffer for normal root branching; heap fallback if needed
     float probs_stack[256];
     std::vector<float> probs_heap;
     float* probs = probs_stack;
-    if (moves.size() > 256) {
-        probs_heap.resize(moves.size());
-        probs = probs_heap.data();
-    }
+    if (moves.size() > 256) { probs_heap.resize(moves.size()); probs = probs_heap.data(); }
 
     if (!scoreLegalMoves(board, moves, probs)) return false;
 
@@ -592,13 +526,8 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
     float best_p = probs[0];
     double ent = 0.0;
     for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
-        if (probs[i] > best_p) {
-            best_p = probs[i];
-            best_i = i;
-        }
-        if (probs[i] > 1e-12f) {
-            ent -= double(probs[i]) * std::log(double(probs[i]));
-        }
+        if (probs[i] > best_p) { best_p = probs[i]; best_i = i; }
+        if (probs[i] > 1e-12f) ent -= double(probs[i]) * std::log(double(probs[i]));
     }
     out_top = moves[best_i];
     out_top1_prob = best_p;
@@ -610,16 +539,10 @@ bool PolicyNet::rootAdvice(const chess::Board& board,
 // Debug
 // ============================================================================
 void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
-    if (!loaded) {
-        std::cout << "info string Policy not loaded" << std::endl;
-        return;
-    }
+    if (!loaded) { std::cout << "info string Policy not loaded" << std::endl; return; }
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
-    if (moves.empty()) {
-        std::cout << "info string no legal moves" << std::endl;
-        return;
-    }
+    if (moves.empty()) { std::cout << "info string no legal moves" << std::endl; return; }
 
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
@@ -631,13 +554,10 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
     std::cout << "info string fen: " << board.getFen() << std::endl;
     std::cout << "info string stm: "
               << (board.sideToMove() == chess::Color::WHITE ? "w" : "b")
-              << " king=" << ksq
-              << " flip=" << flip
-              << " from_to=" << from_to
-              << " num_moves=" << num_moves
+              << " king=" << ksq << " flip=" << flip
+              << " from_to=" << from_to << " num_moves=" << num_moves
               << " mode=root_lmr+tm"
-              << " lmr_scale=" << POLICY_LMR_SCALE
-              << " lmr_offset=" << POLICY_LMR_OFFSET
+              << " lmr_k=" << POLICY_LMR_K
               << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
               << std::endl;
 
@@ -665,9 +585,7 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
 
     std::vector<int> order(moves.size());
     for (size_t i = 0; i < moves.size(); ++i) order[i] = static_cast<int>(i);
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return probs[a] > probs[b];
-    });
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return probs[a] > probs[b]; });
 
     const int nshow = std::min(topN, static_cast<int>(moves.size()));
     std::cout << "info string rank  move     idx   see  logit      prob   qrank" << std::endl;
@@ -687,42 +605,29 @@ void PolicyNet::debugPosition(const chess::Board& board, int topN) const {
         char buf[192];
         std::snprintf(buf, sizeof(buf),
                       "info string #%02d  %-6s  %5d  %s  %+9.4f  %6.2f%%  %5d",
-                      r + 1,
-                      chess::uci::moveToUci(m).c_str(),
-                      mi,
-                      good_see ? "Y" : "N",
-                      logits[i],
-                      probs[i] * 100.f,
-                      ranks[i]);
+                      r + 1, chess::uci::moveToUci(m).c_str(), mi,
+                      good_see ? "Y" : "N", logits[i], probs[i] * 100.f, ranks[i]);
         std::cout << buf << std::endl;
     }
 
     double ent = 0.0;
-    for (float p : probs) {
-        if (p > 1e-12f) ent -= double(p) * std::log(double(p));
-    }
+    for (float p : probs) { if (p > 1e-12f) ent -= double(p) * std::log(double(p)); }
     std::cout << "info string entropy=" << ent
               << " top1=" << (probs[order[0]] * 100.f) << "%"
-              << " legal=" << moves.size()
-              << " nquiets=" << nq
-              << std::endl;
+              << " legal=" << moves.size() << " nquiets=" << nq << std::endl;
     std::cout << "info string === END POLICY DEBUG ===" << std::endl;
     std::cout.flush();
 }
 
 void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const {
-    if (!loaded) {
-        std::cout << "info string Policy not loaded" << std::endl;
-        return;
-    }
+    if (!loaded) { std::cout << "info string Policy not loaded" << std::endl; return; }
 
     const int mi = mapMoveToIndex(board, m);
     bool good_see = false;
     if (m.typeOf() == chess::Move::CASTLING) {
         const bool ks = m.to() > m.from();
         const int kto = chess::Square::castling_king_square(ks, board.at(m.from()).color()).index();
-        const chess::Move kw = chess::Move::make(
-            m.from(), chess::Square(static_cast<chess::Square::underlying>(kto)));
+        const chess::Move kw = chess::Move::make(m.from(), chess::Square(static_cast<chess::Square::underlying>(kto)));
         good_see = chess::see::see_ge(board, kw, POLICY_SEE_TH);
     } else {
         good_see = chess::see::see_ge(board, m, POLICY_SEE_TH);
@@ -730,11 +635,8 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
 
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board);
-    float logit = -1e9f;
-    float prob  = 0.f;
-    int   rank  = -1;
-    int   qrank = -1;
-    int   nq    = 0;
+    float logit = -1e9f, prob = 0.f;
+    int rank = -1, qrank = -1, nq = 0;
     if (!moves.empty()) {
         std::vector<float> logits(moves.size(), 0.f);
         std::vector<float> probs(moves.size(), 0.f);
@@ -743,17 +645,10 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
         scoreLegalMoves(board, moves, probs.data());
         rankLegalQuiets(board, moves, ranks.data(), &nq);
         for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
-            if (moves[i] == m) {
-                logit = logits[i];
-                prob  = probs[i];
-                qrank = ranks[i];
-                break;
-            }
+            if (moves[i] == m) { logit = logits[i]; prob = probs[i]; qrank = ranks[i]; break; }
         }
         int better = 0;
-        for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
-            if (probs[i] > prob) ++better;
-        }
+        for (int i = 0; i < static_cast<int>(moves.size()); ++i) { if (probs[i] > prob) ++better; }
         rank = better + 1;
     }
 
@@ -761,25 +656,16 @@ void PolicyNet::debugMove(const chess::Board& board, const chess::Move& m) const
         const int ksq = stmKingIndex(board);
         const int hm  = ((ksq % 8) > 3) ? 7 : 0;
         const bool ks = m.to() > m.from();
-        const int is_ks = ks ? 1 : 0;
-        const int is_hm = (hm == 0) ? 1 : 0;
-        const int cidx = offsets[5][64] + POLICY_PROMOS + (is_ks ^ is_hm);
+        const int cidx = offsets[5][64] + POLICY_PROMOS + ((ks ? 1 : 0) ^ ((hm == 0) ? 1 : 0));
         std::cout << "info string castle_channels idx0=" << cidx
                   << " idx1=" << (cidx + from_to)
-                  << " chosen=" << mi
-                  << " see=" << (good_see ? 1 : 0)
-                  << std::endl;
+                  << " chosen=" << mi << " see=" << (good_see ? 1 : 0) << std::endl;
     }
 
     std::cout << "info string move " << chess::uci::moveToUci(m)
-              << " idx=" << mi
-              << " see=" << (good_see ? 1 : 0)
-              << " logit=" << logit
-              << " prob=" << (prob * 100.f) << "%"
-              << " qrank=" << qrank
-              << "/" << nq
-              << " rank=" << rank
-              << "/" << moves.size()
-              << std::endl;
+              << " idx=" << mi << " see=" << (good_see ? 1 : 0)
+              << " logit=" << logit << " prob=" << (prob * 100.f) << "%"
+              << " qrank=" << qrank << "/" << nq
+              << " rank=" << rank << "/" << moves.size() << std::endl;
     std::cout.flush();
 }
