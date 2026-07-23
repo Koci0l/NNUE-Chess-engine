@@ -18,7 +18,7 @@ constexpr int POLICY_PLANE       = 768;
 constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
 
 #ifndef KOCIOLEK_POLICY_HL
-#define KOCIOLEK_POLICY_HL 128
+#define KOCIOLEK_POLICY_HL 1024
 #endif
 
 constexpr int POLICY_HL          = KOCIOLEK_POLICY_HL;
