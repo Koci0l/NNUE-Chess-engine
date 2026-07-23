@@ -16,6 +16,9 @@ bool g_silent = false;
 
 static int lmr_reductions[64][64];
 
+// Global policy cache (separate from TT)
+static PolicyCache g_policy_cache;
+
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
@@ -142,7 +145,7 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to(); // Disservin: to() is rook square
+        chess::Square rook_from = move.to();
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
@@ -631,12 +634,41 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    // ========================================================================
+    // Internal policy: compute advice at selected nodes
+    // ========================================================================
+
+    PolicyAdvice policy_advice;
+    bool use_policy_node = false;
+
+    if (g_policy.loaded &&
+        !in_check &&
+        !in_singular_search &&
+        depth >= POLICY_INTERNAL_MIN_DEPTH &&
+        ply_from_root < POLICY_INTERNAL_MAX_PLY &&
+        (!is_pv_node || depth >= 7) &&
+        std::abs(beta) < MATE_SCORE - 200) {
+
+        use_policy_node = true;
+
+        if (!g_policy_cache.get(hash, policy_advice)) {
+            if (computePolicyAdvice(board, policy_advice)) {
+                g_policy_cache.put(hash, policy_advice);
+            } else {
+                use_policy_node = false;
+            }
+        }
+    }
+
+    // ========================================================================
+
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
+    mpCtx.policy = use_policy_node ? &policy_advice : nullptr;
 
-    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
+    MovePicker mp(board, mpCtx, depth, false, false);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -662,6 +694,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool is_noisy = !is_quiet;
 
+        // Policy protection flag
+        bool policy_protected = use_policy_node && policy_advice.is_protected(move);
+
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
             continue;
@@ -669,14 +704,16 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2) {
+            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2 &&
+            !policy_protected) {
             if (!chess::see::see_ge(board, move, -50 * depth)) {
                 continue;
             }
         }
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
-            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
+            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100 &&
+            !policy_protected) {
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
 
@@ -685,6 +722,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
+            !policy_protected &&
             move_count >= 3 + depth * depth) {
             break;
         }
@@ -716,7 +754,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            std::abs(alpha) < MATE_SCORE - 100) {
+            std::abs(alpha) < MATE_SCORE - 100 && !policy_protected) {
             int futility_margin = 100 + 80 * depth;
 
             if (static_eval + futility_margin <= alpha) {
@@ -748,6 +786,19 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            // Policy-shaped LMR modulation
+            if (use_policy_node && policy_advice.ok) {
+                float rel = policy_advice.rel_of(move);
+                float sharp = policy_advice.sharpness;
+
+                float adj = -POLICY_LMR_K * rel;
+                adj = std::clamp(adj, -2.0f, 3.0f);
+                adj *= sharp;
+
+                reduction += int(std::lround(adj));
+            }
+
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
@@ -933,6 +984,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_correctionHistory.age();
     }
 
+    // Compute root policy once
     RootPolicy rootPolicy;
     computeRootPolicy(board, rootPolicy);
 
