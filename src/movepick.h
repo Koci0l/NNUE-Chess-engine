@@ -15,6 +15,12 @@ struct MovePickerContext {
     int ply = 0;
     SearchStack* ss = nullptr;
 
+    // These are only used at ply == 0 when root_policy_order == true.
+    // policy_bonus is aligned with policy_moves.
+    bool root_policy_order = false;
+    const chess::Movelist* policy_moves = nullptr;
+    const int* policy_bonus = nullptr;
+
     MovePickerContext() = default;
 
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,

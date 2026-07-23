@@ -6,6 +6,24 @@
 #include <algorithm>
 #include <cstring>
 
+static int rootPolicyOrderBonus(const MovePickerContext& ctx,
+                                const chess::Move& move) {
+    if (!ctx.root_policy_order) return 0;
+    if (ctx.ply != 0) return 0;
+    if (ctx.policy_moves == nullptr) return 0;
+    if (ctx.policy_bonus == nullptr) return 0;
+
+    const int n = static_cast<int>(ctx.policy_moves->size());
+
+    for (int i = 0; i < n; ++i) {
+        if ((*ctx.policy_moves)[i] == move) {
+            return ctx.policy_bonus[i];
+        }
+    }
+
+    return 0;
+}
+
 // ============================================================================
 // MovePicker
 // ============================================================================
@@ -113,8 +131,11 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
-    // Path A: pure history — no policy bonus
-    return hist + cont1 + cont2;
+    int score = hist + cont1 + cont2;
+
+    score += rootPolicyOrderBonus(m_ctx, move);
+
+    return score;
 }
 
 void MovePicker::scoreCaptures() {
