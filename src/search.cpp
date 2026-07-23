@@ -48,8 +48,8 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
-constexpr float POLICY_ROOT_ORDER_WEIGHT = 2500.0f;
-constexpr int   POLICY_ROOT_ORDER_MAX    = 12000;
+constexpr float POLICY_ROOT_ORDER_WEIGHT = 800.0f;
+constexpr int   POLICY_ROOT_ORDER_MAX    = 4000;
 
 inline int scaleNNUE(int raw_score) {
     return raw_score;
@@ -223,6 +223,7 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
     if (te.depth < depth - SE_DEPTH_TOL) return out;
 
     int tt_score = te.score;
+
     if (tt_score >= MATE_SCORE - 100) tt_score -= ply_from_root;
     else if (tt_score <= -MATE_SCORE + 100) tt_score += ply_from_root;
 
@@ -273,6 +274,7 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
         chess::movegen::legalmoves(legal_moves, board);
 
         bool is_legal = false;
+
         for (const auto& m : legal_moves) {
             if (m == move) {
                 is_legal = true;
@@ -319,6 +321,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
         tt_move = chess::Move(te.best_move);
 
         int tt_score = te.score;
+
         if (tt_score >= MATE_SCORE - 100) tt_score -= ply_from_root;
         else if (tt_score <= -MATE_SCORE + 100) tt_score += ply_from_root;
 
@@ -352,6 +355,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
     while (true) {
         chess::Move move = mp.next();
+
         if (move == chess::Move()) break;
 
         searched_any = true;
@@ -908,59 +912,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     return best_score;
 }
 
-static int rootMoveBaseScore(const chess::Board& board,
-                             const chess::Move& move,
-                             const chess::Move& best_move) {
-    if (move == best_move && best_move != chess::Move()) {
-        return 3000000;
-    }
-
-    if (move.typeOf() == chess::Move::PROMOTION) {
-        return 900000 + pieceValue(move.promotionType());
-    }
-
-    chess::Piece attacker = board.at(move.from());
-    chess::Piece captured = chess::Piece::NONE;
-
-    if (move.typeOf() == chess::Move::ENPASSANT) {
-        chess::Square capSq(move.to().file(), move.from().rank());
-        captured = board.at(capSq);
-    } else {
-        captured = board.at(move.to());
-    }
-
-    if (captured != chess::Piece::NONE) {
-        int victim = pieceValue(captured.type());
-        int att = pieceValue(attacker.type());
-
-        int cap_hist = g_captureHistory.get(static_cast<int>(attacker.type()),
-                                            move.to().index(),
-                                            static_cast<int>(captured.type())) / 16;
-
-        int base = victim * 10 - att + cap_hist;
-
-        if (chess::see::see_ge(board, move, 0)) {
-            return 800000 + base;
-        }
-
-        return -1000000 + base;
-    }
-
-    int killer_score = g_killerMoves.get_killer_score(0, move);
-
-    if (killer_score > 0) {
-        return 700000 + killer_score * 1000;
-    }
-
-    int score = g_butterflyHistory.get(board.sideToMove(), move.from(), move.to());
-
-    if (move.typeOf() == chess::Move::CASTLING) {
-        score += 50;
-    }
-
-    return score;
-}
-
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
                    int64_t node_limit, int* score_out, uint64_t* nodes_out) {
     chess::Movelist moves;
@@ -1136,31 +1087,20 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             score = -MATE_SCORE;
             depth_best_move = best_move;
 
-            std::vector<ScoredMove> root_moves;
-            root_moves.reserve(root_legals.size());
+            MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
+            rootCtx.root_policy_order = use_policy_root;
+            rootCtx.policy_moves = &root_legals;
+            rootCtx.policy_bonus = policy_bonus;
 
-            for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
-                chess::Move move = root_legals[i];
-                int sc = rootMoveBaseScore(board, move, best_move);
-
-                if (use_policy_root && isQuietMove(board, move)) {
-                    sc += policy_bonus[i];
-                }
-
-                root_moves.emplace_back(move, sc);
-            }
-
-            std::stable_sort(root_moves.begin(), root_moves.end(),
-                             [](const ScoredMove& a, const ScoredMove& b) {
-                                 return a.score > b.score;
-                             });
+            MovePicker rootPicker(board, rootCtx, depth, false, false);
 
             int root_move_count = 0;
 
-            for (const auto& sm : root_moves) {
-                chess::Move move = sm.move;
-                bool root_is_quiet = isQuietMove(board, move);
+            while (true) {
+                bool root_is_quiet = false;
+                chess::Move move = rootPicker.next(root_is_quiet);
 
+                if (move == chess::Move()) break;
                 if (tm.should_stop()) goto search_done;
 
                 chess::Piece root_piece = board.at(move.from());
