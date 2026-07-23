@@ -19,7 +19,7 @@ constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
 // Change this to 1024 if your embedded policy blob is the 1024 HL net.
 // For the old 128 blob, leave it at 128.
 #ifndef KOCIOLEK_POLICY_HL
-#define KOCIOLEK_POLICY_HL 128
+#define KOCIOLEK_POLICY_HL 1024
 #endif
 
 constexpr int POLICY_HL          = KOCIOLEK_POLICY_HL;
