@@ -42,7 +42,6 @@ constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
 constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
 
-constexpr int POLICY_HIST_BONUS_MAX  = 800;
 
 struct PolicyNet {
     bool loaded = false;
