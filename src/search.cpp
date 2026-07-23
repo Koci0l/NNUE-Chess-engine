@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <cstdint>
 
 bool g_silent = false;
 
@@ -48,8 +49,135 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
-constexpr float POLICY_ROOT_ORDER_WEIGHT = 800.0f;
-constexpr int   POLICY_ROOT_ORDER_MAX    = 4000;
+constexpr int POLICY_ADVICE_MAX_TOP = 16;
+
+constexpr int POLICY_CACHE_BITS = 18;
+constexpr int POLICY_CACHE_SIZE = 1 << POLICY_CACHE_BITS;
+constexpr int POLICY_CACHE_MASK = POLICY_CACHE_SIZE - 1;
+
+constexpr int POLICY_WHITELIST_MIN_DEPTH = 4;
+constexpr int POLICY_WHITELIST_MAX_DEPTH = 8;
+constexpr int POLICY_WHITELIST_MIN_K     = 6;
+constexpr int POLICY_WHITELIST_MAX_K     = 10;
+
+struct PolicyAdvice {
+    bool ok = false;
+    int nq = 0;
+    int top_count = 0;
+    chess::Move top[POLICY_ADVICE_MAX_TOP];
+};
+
+struct PolicyCacheEntry {
+    uint64_t key;
+    uint16_t moves[POLICY_ADVICE_MAX_TOP];
+    uint8_t top_count;
+    uint8_t nq;
+    uint8_t valid;
+};
+
+static PolicyCacheEntry policyCache[POLICY_CACHE_SIZE];
+
+static bool policyCacheGet(uint64_t key, PolicyAdvice& adv) {
+    const PolicyCacheEntry& e = policyCache[key & POLICY_CACHE_MASK];
+
+    if (!e.valid || e.key != key) return false;
+
+    adv.ok = true;
+    adv.nq = e.nq;
+    adv.top_count = e.top_count;
+
+    int n = std::min<int>(adv.top_count, POLICY_ADVICE_MAX_TOP);
+
+    for (int i = 0; i < n; ++i) {
+        adv.top[i] = chess::Move(e.moves[i]);
+    }
+
+    return true;
+}
+
+static void policyCachePut(uint64_t key, const PolicyAdvice& adv) {
+    PolicyCacheEntry& e = policyCache[key & POLICY_CACHE_MASK];
+
+    e.key = key;
+    e.valid = 1;
+    e.nq = static_cast<uint8_t>(std::min(255, adv.nq));
+    e.top_count = static_cast<uint8_t>(std::min<int>(adv.top_count, POLICY_ADVICE_MAX_TOP));
+
+    for (int i = 0; i < e.top_count; ++i) {
+        e.moves[i] = adv.top[i].move();
+    }
+}
+
+static bool computePolicyAdvice(const chess::Board& board, PolicyAdvice& adv) {
+    adv.ok = false;
+    adv.nq = 0;
+    adv.top_count = 0;
+
+    if (!g_policy.loaded) return false;
+
+    chess::Movelist legals;
+    chess::movegen::legalmoves(legals, board);
+
+    int n = static_cast<int>(legals.size());
+
+    if (n <= 0 || n > 256) return false;
+
+    float logits[256];
+
+    if (!g_policy.logitsLegalMoves(board, legals, logits)) {
+        return false;
+    }
+
+    int quiet_idx[256];
+    float quiet_logit[256];
+    int nq = 0;
+    float max_quiet_logit = -1e30f;
+
+    for (int i = 0; i < n; ++i) {
+        if (!isQuietMove(board, legals[i])) continue;
+
+        quiet_idx[nq] = i;
+        quiet_logit[nq] = logits[i];
+
+        if (quiet_logit[nq] > max_quiet_logit) {
+            max_quiet_logit = quiet_logit[nq];
+        }
+
+        ++nq;
+    }
+
+    adv.nq = nq;
+
+    if (nq == 0) {
+        adv.ok = true;
+        return true;
+    }
+
+    if (max_quiet_logit < -1e8f) {
+        return false;
+    }
+
+    int order[256];
+
+    for (int q = 0; q < nq; ++q) {
+        order[q] = q;
+    }
+
+    std::sort(order, order + nq, [&](int a, int b) {
+        return quiet_logit[a] > quiet_logit[b];
+    });
+
+    int top = std::min(nq, POLICY_ADVICE_MAX_TOP);
+
+    for (int i = 0; i < top; ++i) {
+        adv.top[i] = legals[quiet_idx[order[i]]];
+    }
+
+    adv.top_count = top;
+    adv.ok = true;
+
+    return true;
+}
 
 inline int scaleNNUE(int raw_score) {
     return raw_score;
@@ -632,6 +760,42 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    PolicyAdvice policy_adv;
+    bool policy_whitelist = false;
+    int policy_k = 0;
+
+    if (!in_singular_search && !is_pv_node && !in_check &&
+        depth >= POLICY_WHITELIST_MIN_DEPTH &&
+        depth <= POLICY_WHITELIST_MAX_DEPTH &&
+        g_policy.loaded &&
+        std::abs(beta) < MATE_SCORE - 100) {
+
+        if (policyCacheGet(hash, policy_adv)) {
+            policy_whitelist = policy_adv.ok;
+        } else if (computePolicyAdvice(board, policy_adv)) {
+            policyCachePut(hash, policy_adv);
+            policy_whitelist = policy_adv.ok;
+        }
+
+        if (policy_whitelist) {
+            policy_k = std::clamp(3 + depth,
+                                  POLICY_WHITELIST_MIN_K,
+                                  POLICY_WHITELIST_MAX_K);
+        }
+    }
+
+    auto policyAllowsQuiet = [&](const chess::Move& m) -> bool {
+        if (!policy_whitelist) return true;
+
+        int lim = std::min(policy_adv.top_count, policy_k);
+
+        for (int i = 0; i < lim; ++i) {
+            if (policy_adv.top[i] == m) return true;
+        }
+
+        return false;
+    };
+
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
@@ -650,6 +814,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     int move_count = 0;
     bool had_non_excluded_move = false;
+    bool searched_any_move = false;
 
     while (true) {
         bool is_quiet = false;
@@ -661,6 +826,27 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         had_non_excluded_move = true;
 
         bool is_noisy = !is_quiet;
+
+        if (policy_whitelist) {
+            bool protected_move =
+                (move == tt_move) ||
+                g_killerMoves.is_killer(ply_from_root, move) ||
+                g_counterMoves.is_counter(previous_move, move);
+
+            if (is_quiet) {
+                if (!protected_move &&
+                    move.typeOf() != chess::Move::CASTLING &&
+                    !policyAllowsQuiet(move)) {
+                    continue;
+                }
+            } else {
+                if (!protected_move &&
+                    move.typeOf() != chess::Move::PROMOTION &&
+                    mp.lastScore() < 0) {
+                    continue;
+                }
+            }
+        }
 
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
@@ -784,6 +970,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         board.unmakeMove(move);
         thread.accumulatorStack.pop();
 
+        searched_any_move = true;
+
         if (eval > best_score) {
             best_score = eval;
             best_move = move;
@@ -853,6 +1041,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (!had_non_excluded_move) {
         if (in_check) return -MATE_SCORE + ply_from_root;
         return getDrawScore(ply_from_root);
+    }
+
+    if (!searched_any_move) {
+        return alpha;
     }
 
     if (best_score > original_alpha && best_move != chess::Move()) {
@@ -961,112 +1153,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             break;
         }
 
-        chess::Movelist root_legals;
-        chess::movegen::legalmoves(root_legals, board);
-
-        float root_logits[256];
-        int policy_rank[256];
-        int policy_bonus[256];
-        int policy_nq = 0;
-
-        for (int i = 0; i < 256; ++i) {
-            policy_rank[i] = -1;
-            policy_bonus[i] = 0;
-        }
-
-        bool use_policy_root =
-            g_policy.loaded &&
-            depth >= POLICY_ROOT_LMR_MIN_DEPTH &&
-            root_legals.size() > 1 &&
-            static_cast<int>(root_legals.size()) <= 256;
-
-        if (use_policy_root) {
-            if (!g_policy.logitsLegalMoves(board, root_legals, root_logits)) {
-                use_policy_root = false;
-            }
-        }
-
-        if (use_policy_root) {
-            int quiet_idx[256];
-            float quiet_logit[256];
-            int nq = 0;
-            float max_quiet_logit = -1e30f;
-
-            for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
-                if (!isQuietMove(board, root_legals[i])) continue;
-
-                quiet_idx[nq] = i;
-                quiet_logit[nq] = root_logits[i];
-
-                if (quiet_logit[nq] > max_quiet_logit) {
-                    max_quiet_logit = quiet_logit[nq];
-                }
-
-                ++nq;
-            }
-
-            policy_nq = nq;
-
-            if (nq < 2 || max_quiet_logit < -1e8f) {
-                use_policy_root = false;
-            } else {
-                int order[256];
-
-                for (int q = 0; q < nq; ++q) {
-                    order[q] = q;
-                }
-
-                std::sort(order, order + nq, [&](int a, int b) {
-                    return quiet_logit[a] > quiet_logit[b];
-                });
-
-                for (int r = 0; r < nq; ++r) {
-                    policy_rank[quiet_idx[order[r]]] = r;
-                }
-
-                float sum = 0.0f;
-
-                for (int q = 0; q < nq; ++q) {
-                    if (quiet_logit[q] > -1e8f) {
-                        sum += std::exp(quiet_logit[q] - max_quiet_logit);
-                    }
-                }
-
-                if (sum > 0.0f) {
-                    for (int q = 0; q < nq; ++q) {
-                        float p = 0.0f;
-
-                        if (quiet_logit[q] > -1e8f) {
-                            p = std::exp(quiet_logit[q] - max_quiet_logit) / sum;
-                        }
-
-                        float lift = std::log(std::max(p, 1e-9f) * static_cast<float>(nq));
-
-                        int bonus = static_cast<int>(POLICY_ROOT_ORDER_WEIGHT * lift);
-                        bonus = std::clamp(bonus, -POLICY_ROOT_ORDER_MAX, POLICY_ROOT_ORDER_MAX);
-
-                        policy_bonus[quiet_idx[q]] = bonus;
-                    }
-                } else {
-                    use_policy_root = false;
-                }
-            }
-        }
-
-        const bool use_policy_lmr = use_policy_root && policy_nq > 0;
-
-        auto findPolicyRank = [&](const chess::Move& m) -> int {
-            if (!use_policy_lmr) return -1;
-
-            for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
-                if (root_legals[i] == m) return policy_rank[i];
-            }
-
-            return -1;
-        };
-
-        const bool root_in_check = board.inCheck();
-
         chess::Move depth_best_move = best_move;
         int score = -MATE_SCORE;
         int delta = 25;
@@ -1088,11 +1174,35 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth_best_move = best_move;
 
             MovePickerContext rootCtx(best_move, chess::Move(), board.sideToMove(), 0, ss);
-            rootCtx.root_policy_order = use_policy_root;
-            rootCtx.policy_moves = &root_legals;
-            rootCtx.policy_bonus = policy_bonus;
-
             MovePicker rootPicker(board, rootCtx, depth, false, false);
+
+            chess::Movelist root_legals;
+            chess::movegen::legalmoves(root_legals, board);
+
+            int policy_rank[256];
+            int policy_nq = 0;
+
+            for (int i = 0; i < 256; ++i) policy_rank[i] = -1;
+
+            const bool use_policy_lmr =
+                g_policy.loaded &&
+                depth >= POLICY_ROOT_LMR_MIN_DEPTH &&
+                root_legals.size() > 1 &&
+                static_cast<int>(root_legals.size()) <= 256;
+
+            if (use_policy_lmr) {
+                g_policy.rankLegalQuiets(board, root_legals, policy_rank, &policy_nq);
+            }
+
+            auto findPolicyRank = [&](const chess::Move& m) -> int {
+                if (!use_policy_lmr || policy_nq <= 0) return -1;
+
+                for (int i = 0; i < static_cast<int>(root_legals.size()); ++i) {
+                    if (root_legals[i] == m) return policy_rank[i];
+                }
+
+                return -1;
+            };
 
             int root_move_count = 0;
 
@@ -1112,8 +1222,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 ss[0].current_move = move;
                 ss[0].moved_piece = root_piece;
 
-                const bool gives_check = board.inCheck();
-
                 int eval;
                 bool is_draw_move = isDrawByRepetition(board) || isDrawByFiftyMove(board);
 
@@ -1128,15 +1236,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                     if (use_policy_lmr &&
                         root_is_quiet &&
-                        !root_in_check &&
-                        !gives_check &&
                         new_depth >= 1 &&
                         depth >= POLICY_ROOT_LMR_MIN_DEPTH) {
 
-                        int move_no = root_move_count + 1;
-
                         reduction = lmr_reductions[std::min(depth, 63)]
-                                                   [std::min(move_no, 63)];
+                                                   [std::min(root_move_count, 63)];
 
                         const int pr = findPolicyRank(move);
 

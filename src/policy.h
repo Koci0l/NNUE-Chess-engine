@@ -17,7 +17,7 @@
 constexpr int POLICY_PLANE       = 768;
 constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
 constexpr int POLICY_HL          = 1024;
-constexpr int POLICY_HL_PAIR     = POLICY_HL / 2;    // 64
+constexpr int POLICY_HL_PAIR     = POLICY_HL / 2;    // 512
 constexpr int POLICY_MAX_ACTIVE  = 32;
 constexpr int POLICY_QA          = 128;
 constexpr int POLICY_PROMOS      = 4 * 22;           // 88
@@ -42,6 +42,7 @@ constexpr double POLICY_TM_DISAGREE     = 1.35;   // policy top1 != search best
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;   // low confidence
 constexpr double POLICY_TM_AGREE_S      = 0.88;   // high-conf agreement
 
+constexpr int POLICY_HIST_BONUS_MAX  = 800;
 
 struct PolicyNet {
     bool loaded = false;
