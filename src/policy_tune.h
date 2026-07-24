@@ -85,6 +85,6 @@ void printPolicyOptions();
 
 inline float policyWeight(int strength) {
     if (strength < 5) return 0.0f;
-    if (strength > 100) strength = 100;
+    if (strength > 200) strength = 200;
     return static_cast<float>(strength) / 100.0f;
 }
