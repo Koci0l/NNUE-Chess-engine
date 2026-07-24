@@ -1,12 +1,10 @@
 #pragma once
 
 #include "chess.hpp"
-#include "types.h"   // ScoredMove, SearchStack, pieceValue, etc.
-
+#include "types.h"
 #include <vector>
 
-// Forward decls only if not already fully defined via types.h
-// SearchStack is defined in types.h
+struct PolicyAdvice;
 
 struct MovePickerContext {
     chess::Move tt_move{};
@@ -14,6 +12,7 @@ struct MovePickerContext {
     chess::Color side_to_move{};
     int ply = 0;
     SearchStack* ss = nullptr;
+    const PolicyAdvice* policy = nullptr;
 
     MovePickerContext() = default;
 
@@ -23,7 +22,8 @@ struct MovePickerContext {
           counter_move(counter),
           side_to_move(side),
           ply(ply_),
-          ss(ss_) {}
+          ss(ss_),
+          policy(nullptr) {}
 };
 
 enum class MovePickStage {
@@ -41,7 +41,6 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
-    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 
@@ -53,7 +52,6 @@ private:
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
-
     MovePickStage m_stage;
 
     chess::Move m_killer1{};
@@ -72,6 +70,7 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
+
     chess::Move m_returned[512];
     int m_returned_count = 0;
 
