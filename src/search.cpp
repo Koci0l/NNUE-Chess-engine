@@ -52,7 +52,7 @@ constexpr int RAZOR_MARGIN_D3 = 700;
 // >= this threshold.  Start at 7 (tiny NPS cost), SPRT, then step down to 6, 5.
 // To use a cheaper smaller net in-tree, load a second PolicyNet (e.g. HL=512)
 // as g_policy_tree and swap it in below; the root keeps g_policy (HL=4096).
-constexpr int POLICY_TREE_MIN_DEPTH = 7;
+constexpr int POLICY_TREE_MIN_DEPTH = 12;
 
 // [ROOT BLEND] Policy-guided root tiebreak constants.
 constexpr float POLICY_BLEND_LAMBDA    = 80.0f;   // cp weight on log(policy_prob)
