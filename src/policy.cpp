@@ -14,6 +14,9 @@
 #include <iostream>
 #include <vector>
 
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+#endif
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -641,29 +644,64 @@ static void computeHidden(const PolicyNet& net,
 
     // Dense hidden layer:
     // 4096 -> 1024 -> activation
-    for (int i = 0; i < POLICY_HL2; ++i) {
-        float acc = net.l1b[static_cast<size_t>(i)];
+    if (net.l1_hidden_major) {
+        // l1w layout: [1024][4096]
+        for (int i = 0; i < POLICY_HL2; ++i) {
+            float acc = net.l1b[static_cast<size_t>(i)];
 
-        if (net.l1_hidden_major) {
-            // l1w layout: [1024][4096]
             const float* row =
                 net.l1w.data() + size_t(i) * size_t(POLICY_HL_PAIR);
 
             for (int k = 0; k < POLICY_HL_PAIR; ++k) {
                 acc += h1[k] * row[k];
             }
-        } else {
-            // l1w layout: [4096][1024]
-            for (int k = 0; k < POLICY_HL_PAIR; ++k) {
-                acc += h1[k] *
-                       net.l1w[size_t(k) * size_t(POLICY_HL2) + size_t(i)];
+
+            h2[i] = policyAct(net, acc);
+        }
+    } else {
+        // l1w layout: [4096][1024]
+        //
+        // This is the correct layout for your current net:
+        // l1_hidden_major = false
+        //
+        // Do:
+        //   h2 = bias
+        //   h2 += h1[k] * l1w[k]
+        //
+        // This reads l1w sequentially and is much faster.
+        std::memcpy(h2, net.l1b.data(), sizeof(float) * POLICY_HL2);
+
+        for (int k = 0; k < POLICY_HL_PAIR; ++k) {
+            const float x = h1[k];
+
+            if (x == 0.0f) continue;
+
+            const float* row =
+                net.l1w.data() + size_t(k) * size_t(POLICY_HL2);
+
+#if defined(__AVX2__) && defined(__FMA__)
+            const __m256 xv = _mm256_set1_ps(x);
+
+            for (int i = 0; i < POLICY_HL2; i += 8) {
+                __m256 acc = _mm256_loadu_ps(h2 + i);
+                __m256 w   = _mm256_loadu_ps(row + i);
+
+                acc = _mm256_fmadd_ps(xv, w, acc);
+
+                _mm256_storeu_ps(h2 + i, acc);
             }
+#else
+            for (int i = 0; i < POLICY_HL2; ++i) {
+                h2[i] += x * row[i];
+            }
+#endif
         }
 
-        h2[i] = policyAct(net, acc);
+        for (int i = 0; i < POLICY_HL2; ++i) {
+            h2[i] = policyAct(net, h2[i]);
+        }
     }
 }
-
 static float logitForMoveIndex(const PolicyNet& net,
                                const float* h2,
                                int mi) {
