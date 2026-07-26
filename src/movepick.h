@@ -1,12 +1,11 @@
 #pragma once
 
 #include "chess.hpp"
-#include "types.h"   // ScoredMove, SearchStack, pieceValue, etc.
-
+#include "types.h"
 #include <vector>
 
-// Forward decls only if not already fully defined via types.h
-// SearchStack is defined in types.h
+// [PATH B] Forward-declare so we can hold a pointer without including policy.h here.
+struct RootPolicy;
 
 struct MovePickerContext {
     chess::Move tt_move{};
@@ -16,14 +15,10 @@ struct MovePickerContext {
     SearchStack* ss = nullptr;
 
     MovePickerContext() = default;
-
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
                       int ply_, SearchStack* ss_)
-        : tt_move(tt),
-          counter_move(counter),
-          side_to_move(side),
-          ply(ply_),
-          ss(ss_) {}
+        : tt_move(tt), counter_move(counter), side_to_move(side),
+          ply(ply_), ss(ss_) {}
 };
 
 enum class MovePickStage {
@@ -41,9 +36,11 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
-    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-               int depth, bool skip_quiets, bool use_policy_unused = false);
+               int depth, bool skip_quiets, bool use_policy = false);
+
+    // [PATH B] Attach an in-tree policy for quiet ordering.
+    void setPolicy(const RootPolicy* p) { m_policy = p; }
 
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
@@ -53,8 +50,9 @@ private:
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
-
     MovePickStage m_stage;
+
+    const RootPolicy* m_policy = nullptr;   // [PATH B]
 
     chess::Move m_killer1{};
     chess::Move m_killer2{};
@@ -72,6 +70,7 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
+
     chess::Move m_returned[512];
     int m_returned_count = 0;
 
@@ -128,9 +127,7 @@ private:
 
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx);
-
 std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves,
                                    const chess::Board& board,
                                    const MovePickerContext& ctx);
-
 void pickNextMove(std::vector<ScoredMove>& moves, size_t current);
