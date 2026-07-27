@@ -795,7 +795,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 g_killerMoves.store(ply_from_root, move);
                 g_counterMoves.update(previous_move, move);
 
-                int bonus = 32 * depth * depth;
+                int d = std::min(depth, 16);
+                int bonus = 32 * d * d;
 
                 g_butterflyHistory.update(side_to_move, move.from(), move.to(), bonus);
 
