@@ -459,8 +459,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
-        depth--;
+    chess::Move policy_hint = chess::Move();
+    if (!in_singular_search && !in_check && tt_move == chess::Move() && depth >= 5 && g_policy.loaded) {
+        float p;
+        if (g_policy.rootAdvice(board, policy_hint, p) && policy_hint != chess::Move()) {
+            // Don't reduce if policy is confident
+            if (p < 0.25f && !is_pv_node && depth >= 4) depth--;
+        } else {
+            if (!is_pv_node && depth >= 4) depth--;
+        }
     }
 
     int raw_static_eval = 0;
