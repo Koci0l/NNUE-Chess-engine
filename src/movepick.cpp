@@ -1,10 +1,9 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
-#include "policy_search.h"   // PolicyQuiets (cached; never evaluates the net here)
+#include "policy.h"   // interior policy: logitFor() cheap per-move scoring
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 // ============================================================================
@@ -116,27 +115,14 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // ------------------------------------------------------------------
-    // Policy bonus. m_ctx.policy is non-null only at gated PV nodes, and
-    // the entry is already computed -- this is a 16-bit linear scan, no
-    // network evaluation happens here.
-    //
-    // The bonus is damped by the magnitude of the existing history signal:
-    // policy is most valuable exactly where history is cold (fresh
-    // positions, early iterations, deep ply). Where history is already
-    // confident, we let it win.
-    // ------------------------------------------------------------------
-    if (m_ctx.policy != nullptr && g_policyUseOrdering) {
-        int pb = m_ctx.policy->bonusFor(move);
-
-        if (pb != 0) {
-            if (POLICY_ORDER_DAMP_K > 0) {
-                const int mag = std::abs(score);
-                pb = static_cast<int>(
-                    (static_cast<long long>(pb) * POLICY_ORDER_DAMP_K) /
-                    (POLICY_ORDER_DAMP_K + mag));
-            }
-            score += pb;
+    // Interior policy: blend the (precomputed) hidden-layer logit for this
+    // quiet move. m_ctx.policy_h is only non-null at nodes that search has
+    // decided are worth the (already-paid) hidden eval, so this is just a
+    // cheap dot product per move.
+    if (m_ctx.policy_h != nullptr) {
+        float logit = g_policy.logitFor(m_board, move, m_ctx.policy_h);
+        if (logit > -1e8f) {
+            score += static_cast<int>(logit * POLICY_INTERIOR_WEIGHT);
         }
     }
 
@@ -373,7 +359,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker  (no policy -- qsearch is far too hot)
+// QSearchMovePicker  (no policy)
 // ============================================================================
 
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)

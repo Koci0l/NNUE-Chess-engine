@@ -5,9 +5,8 @@
 
 #include <vector>
 
-// Forward decl: defined in policy_search.h. Only the pointer is needed here,
-// so movepick.h stays decoupled from the policy network headers.
-struct PolicyQuiets;
+// Forward decls only if not already fully defined via types.h
+// SearchStack is defined in types.h
 
 struct MovePickerContext {
     chess::Move tt_move{};
@@ -16,21 +15,19 @@ struct MovePickerContext {
     int ply = 0;
     SearchStack* ss = nullptr;
 
-    // Non-owning. Non-null only at gated PV nodes; nullptr everywhere else,
-    // in which case move ordering is exactly the old history-only behaviour.
-    const PolicyQuiets* policy = nullptr;
+    // Interior policy: precomputed hidden vector for THIS node (or null).
+    // When non-null, MovePicker blends policy logits into quiet scores.
+    const float* policy_h = nullptr;
 
     MovePickerContext() = default;
 
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
-                      int ply_, SearchStack* ss_,
-                      const PolicyQuiets* policy_ = nullptr)
+                      int ply_, SearchStack* ss_)
         : tt_move(tt),
           counter_move(counter),
           side_to_move(side),
           ply(ply_),
-          ss(ss_),
-          policy(policy_) {}
+          ss(ss_) {}
 };
 
 enum class MovePickStage {
@@ -48,6 +45,7 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
+    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 

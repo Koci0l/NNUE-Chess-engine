@@ -35,6 +35,19 @@ constexpr int POLICY_QUIET_WEIGHT  = 1024;
 constexpr int POLICY_MIN_DEPTH     = 6;
 
 // ============================================================================
+// Interior (in-tree) policy usage
+// ============================================================================
+// We only run the (expensive) hidden-layer forward pass at nodes where it
+// amortizes over many quiet moves: deep enough, not in check, not qsearch.
+// One hidden eval per node; per-move scoring is just a dot product.
+
+constexpr int   POLICY_INTERIOR_MIN_DEPTH = 6;    // gate: depth >= this
+constexpr int   POLICY_INTERIOR_MAX_DEPTH = 64;   // upper gate (safety)
+constexpr float POLICY_INTERIOR_WEIGHT    = 900.f; // logit -> ordering score scale
+constexpr float POLICY_INTERIOR_LMR_SCALE = 1.6f;  // logit -> reduction nudge
+constexpr int   POLICY_INTERIOR_LMR_CLAMP = 2;     // max reduction nudge (+/-)
+
+// ============================================================================
 // Policy-disagreement time management
 // ============================================================================
 
@@ -161,6 +174,15 @@ struct PolicyNet {
 
     void collectFeatures(const chess::Board& board, int* feats, int& nfeats) const;
     int  mapMoveToIndex(const chess::Board& board, const chess::Move& m) const;
+
+    // ---- Interior usage API (compute hidden once, reuse per move) ----------
+    // Fills h_out[POLICY_HL_PAIR]. Cheap enough to call once per node.
+    void computeHiddenForBoard(const chess::Board& board, float* h_out) const;
+
+    // Cheap per-move dot product using a precomputed hidden vector.
+    // Returns the raw output logit for `m`, or -1e9f if unmappable.
+    float logitFor(const chess::Board& board, const chess::Move& m,
+                   const float* h) const;
 
     void debugPosition(const chess::Board& board, int topN = 16) const;
     void debugMove(const chess::Board& board, const chess::Move& m) const;
