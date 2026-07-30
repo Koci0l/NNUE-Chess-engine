@@ -5,6 +5,7 @@
 #include "see.h"
 #include "zobrist.h"
 #include "policy.h"
+#include "policy_search.h"
 
 #include <iostream>
 #include <cmath>
@@ -438,6 +439,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     TTFlag tt_flag = TT_EXACT;
     bool tt_hit = false;
 
+    // True only when tt_move actually came out of the transposition table.
+    // A policy-seeded tt_move must never be treated as a TT move by the
+    // singular-extension logic.
+    bool tt_move_is_real = false;
+
     if (!in_singular_search) {
         TTEntry te;
         tt_hit = peekTT(hash, te);
@@ -447,6 +453,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             tt_depth = te.depth;
             tt_flag = te.flag;
             tt_score = te.score;
+
+            tt_move_is_real = (tt_move != chess::Move());
 
             if (tt_score >= MATE_SCORE - 100) tt_score -= ply_from_root;
             else if (tt_score <= -MATE_SCORE + 100) tt_score += ply_from_root;
@@ -631,10 +639,50 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    // ========================================================================
+    // POLICY PROBE
+    //
+    // This is the *only* place the policy network can be evaluated inside the
+    // tree. It sits after every early-return path (TT cutoff, RFP, razoring,
+    // null move, probcut) so we never pay for a node we are about to abandon.
+    //
+    // policyGateOK() restricts this to real PV nodes at sufficient depth and
+    // near enough to the root. Combined with the zobrist cache in
+    // policy_search.cpp, the number of actual network evaluations per search
+    // is on the order of the PV tree size, not the search tree size.
+    // ========================================================================
+    const PolicyQuiets* pol = nullptr;
+
+    if (policyGateOK(is_pv_node, in_check, in_singular_search, depth, ply_from_root)) {
+        pol = policyProbeQuiets(board, hash);
+
+        // ------------------------------------------------------------------
+        // USE 1: TT-move seeding (internal iterative reduction replacement).
+        //
+        // At a PV node with no TT move we currently have no ordering hint at
+        // all -- the IIR above is gated to non-PV nodes. Rather than burning
+        // a reduced search to find a first move, ask the policy. It is right
+        // 52% of the time at top-1 and 84% at top-3, which is far better than
+        // whatever the capture/history ordering would have guessed.
+        //
+        // This only seeds the move ordering: tt_move_is_real stays false, so
+        // singular extensions will not fire on a guess.
+        // ------------------------------------------------------------------
+        if (pol && g_policyUseSeed &&
+            tt_move == chess::Move() &&
+            depth >= g_policySeedMinDepth &&
+            pol->top_any != 0 &&
+            pol->top_any_prob >= g_policySeedMinProb) {
+            tt_move = chess::Move(pol->top_any);
+            tt_move_is_real = false;
+        }
+    }
+
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
-    MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
+    // USE 2: quiet move ordering bonus (consumed inside MovePicker).
+    MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss, pol);
 
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
@@ -691,7 +739,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         int se_ext = 0;
 
-        if (!in_singular_search && move == tt_move && !in_check) {
+        if (!in_singular_search && tt_move_is_real && move == tt_move && !in_check) {
             auto se = probeSingularExtension(board, depth, beta, ply_from_root,
                                              thread, tm, stats, tt_move, hash,
                                              is_pv_node, is_quiet, ss);
@@ -748,6 +796,23 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            // ----------------------------------------------------------------
+            // USE 3: policy-guided LMR.
+            //
+            // The delta was precomputed at cache-fill time from the quiet
+            // policy distribution (negative = search deeper). This mirrors the
+            // root-level policy LMR adjustment you already run, so root and
+            // interior nodes agree on which quiets deserve depth.
+            //
+            // Note pol is only ever non-null at PV nodes, and can_reduce
+            // already requires is_quiet, so this lookup is a short scan over
+            // at most 64 uint16 values.
+            // ----------------------------------------------------------------
+            if (pol != nullptr && g_policyUseLMR) {
+                reduction += pol->lmrDeltaFor(move);
+            }
+
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
@@ -932,6 +997,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_contHist2ply.age();
         g_correctionHistory.age();
     }
+
+    policyCacheResetStats();
 
     RootPolicy rootPolicy;
     computeRootPolicy(board, rootPolicy);
@@ -1316,6 +1383,29 @@ search_done:
 
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
+
+    // ------------------------------------------------------------------
+    // Instrumentation. `evals` is the number of times the 2048-wide net
+    // actually ran inside the tree; `probes/evals` is the cache leverage.
+    // If evals is more than roughly 1/500 of nodes, tighten the gate
+    // (raise g_policySearchMinDepth or lower g_policySearchMaxPly).
+    // ------------------------------------------------------------------
+    if (!g_silent && g_policyInSearch && g_policy.loaded) {
+        uint64_t p = 0, h = 0, e = 0;
+        policyCacheStats(p, h, e);
+
+        const double hit_pct = (p > 0) ? (100.0 * double(h) / double(p)) : 0.0;
+        const double per_knode =
+            (stats.nodes > 0) ? (1000.0 * double(e) / double(stats.nodes)) : 0.0;
+
+        std::cout << "info string policy_search"
+                  << " probes " << p
+                  << " hits " << h
+                  << " (" << hit_pct << "%)"
+                  << " evals " << e
+                  << " evals/knode " << per_knode
+                  << std::endl;
+    }
 
     std::cerr << "info string total nodes: " << stats.nodes << std::endl;
 

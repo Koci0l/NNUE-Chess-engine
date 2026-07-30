@@ -1,9 +1,10 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
-// NOTE: no policy.h — Path A does not use policy in the picker
+#include "policy_search.h"   // PolicyQuiets (cached; never evaluates the net here)
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 // ============================================================================
@@ -113,8 +114,33 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
-    // Path A: pure history — no policy bonus
-    return hist + cont1 + cont2;
+    int score = hist + cont1 + cont2;
+
+    // ------------------------------------------------------------------
+    // Policy bonus. m_ctx.policy is non-null only at gated PV nodes, and
+    // the entry is already computed -- this is a 16-bit linear scan, no
+    // network evaluation happens here.
+    //
+    // The bonus is damped by the magnitude of the existing history signal:
+    // policy is most valuable exactly where history is cold (fresh
+    // positions, early iterations, deep ply). Where history is already
+    // confident, we let it win.
+    // ------------------------------------------------------------------
+    if (m_ctx.policy != nullptr && g_policyUseOrdering) {
+        int pb = m_ctx.policy->bonusFor(move);
+
+        if (pb != 0) {
+            if (POLICY_ORDER_DAMP_K > 0) {
+                const int mag = std::abs(score);
+                pb = static_cast<int>(
+                    (static_cast<long long>(pb) * POLICY_ORDER_DAMP_K) /
+                    (POLICY_ORDER_DAMP_K + mag));
+            }
+            score += pb;
+        }
+    }
+
+    return score;
 }
 
 void MovePicker::scoreCaptures() {
@@ -347,7 +373,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker  (no policy)
+// QSearchMovePicker  (no policy -- qsearch is far too hot)
 // ============================================================================
 
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)

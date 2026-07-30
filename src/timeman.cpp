@@ -10,7 +10,7 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
     stability_count = 0;
     node_limit = 0;
     node_counter = nullptr;
-    policy_scale = 1.0;          // reset every search
+    policy_scale = 1.0;
     start_time = std::chrono::high_resolution_clock::now();
 
     if (movetime_ms > 0) {
@@ -49,9 +49,7 @@ void TimeManager::set_node_limit(int64_t nodes, const uint64_t* counter) {
 }
 
 void TimeManager::set_policy_time_scale(double scale) {
-    // Bound so a single weird position can't blow the clock or starve us.
-    // Only useful when soft < hard (clock games); ignored otherwise.
-    policy_scale = std::clamp(scale, 0.70, 1.60);
+    policy_scale = std::clamp(scale, 0.45, 1.60);
 }
 
 int64_t TimeManager::elapsed_ms() const {
@@ -66,7 +64,7 @@ bool TimeManager::should_stop() const {
     return elapsed_ms() >= hard_limit_ms;
 }
 
-bool TimeManager::should_continue_depth(int /*depth*/, double last_depth_ms) const {
+bool TimeManager::should_continue_depth(int, double last_depth_ms) const {
     if (node_limit > 0) return !should_stop();
 
     int64_t elapsed = elapsed_ms();

@@ -30,4 +30,5 @@ struct TimeManager {
     bool should_continue_depth(int depth, double last_depth_ms) const;
     void update_stability(chess::Move best_move);
     double stability_factor() const;
+    int get_stability_count() const { return stability_count; }
 };
