@@ -20,8 +20,6 @@ MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
       m_legal_generated(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
-
-    (void)m_depth;
 }
 
 bool MovePicker::wasReturned(const chess::Move& move) const {
@@ -121,31 +119,52 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
     int score = hist + cont1 + cont2;
 
     // ========================================================================
-    // PV1 policy quiet ordering — safe version
+    // PV1 policy quiet ordering — depth-scaled version
     // ========================================================================
-    // Positive-only bonus.
-    // Only top 5 policy quiets.
-    // Only when policy is reasonably sharp/confident.
     //
-    // This is intended as a small hint, not a dominant ordering signal.
-    if (m_ctx.policy != nullptr && m_ctx.policy->ok) {
+    // This uses cached policy information only for the position after pv[0].
+    //
+    // Rules:
+    //   - only at ply 1
+    //   - only when not in check
+    //   - only when policy is sharp/confident
+    //   - only top 3 policy quiets
+    //   - positive-only bonus
+    //   - bonus fades as search depth increases
+    //
+    if (m_ctx.policy != nullptr && m_ctx.policy->ok &&
+        m_ctx.ply == 1 && !m_board.inCheck()) {
+
         const float sharp = m_ctx.policy->quiet_sharpness;
 
-        if (sharp >= 0.40f && m_ctx.policy->top_quiet_prob >= 0.18f) {
+        if (sharp >= 0.50f && m_ctx.policy->top_quiet_prob >= 0.25f) {
+            const float d = float(std::max(1, m_depth));
+
+            // Approximate scale:
+            //
+            //   depth  1 -> 0.50
+            //   depth  5 -> 0.50
+            //   depth 10 -> 0.31
+            //   depth 15 -> 0.22
+            //   depth 20 -> 0.17
+            //   depth 30 -> 0.12
+            //
+            const float depth_scale =
+                std::clamp(4.0f / (d + 3.0f), 0.10f, 0.50f);
+
             int idx = m_ctx.policy->find(move);
 
             if (idx >= 0) {
                 int r = m_ctx.policy->quiet_rank[idx];
 
-                if (r >= 0 && r <= 5) {
-                    int rank_bonus = 0;
+                int base_bonus = 0;
 
-                    if (r == 0)      rank_bonus = 900;
-                    else if (r == 1) rank_bonus = 500;
-                    else if (r == 2) rank_bonus = 250;
-                    else if (r <= 5) rank_bonus = 100;
+                if (r == 0)      base_bonus = 700;
+                else if (r == 1) base_bonus = 350;
+                else if (r == 2) base_bonus = 150;
 
-                    score += int(rank_bonus * sharp);
+                if (base_bonus != 0) {
+                    score += int(float(base_bonus) * sharp * depth_scale);
                 }
             }
         }

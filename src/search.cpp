@@ -26,8 +26,8 @@ static uint64_t g_pv1_policy_key = 0;
 static RootPolicy g_pv1_policy;
 static int g_pv1_policy_depth = -1;
 
-// Be a bit conservative: do not trust very shallow PVs.
-static constexpr int PV1_POLICY_MIN_DEPTH = 6;
+// Run from depth 1, but the MovePicker bonus is depth-scaled and weak.
+static constexpr int PV1_POLICY_MIN_DEPTH = 1;
 
 // ============================================================================
 // LMR init
