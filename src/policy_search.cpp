@@ -19,9 +19,9 @@ int   g_policyOrderScale     = POLICY_ORDER_SCALE_DEFAULT;
 int   g_policySeedMinDepth   = POLICY_SEED_MIN_DEPTH_DEFAULT;
 float g_policySeedMinProb    = POLICY_SEED_MIN_PROB_DEFAULT;
 
-bool  g_policyUseOrdering    = false;
+bool  g_policyUseOrdering    = true;
 bool  g_policyUseLMR         = true;
-bool  g_policyUseSeed        = false;
+bool  g_policyUseSeed        = true;
 
 // ----------------------------------------------------------------------------
 // Per-thread cache
