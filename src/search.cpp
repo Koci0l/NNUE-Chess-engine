@@ -1231,25 +1231,21 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
+        {
         auto depth_end = std::chrono::high_resolution_clock::now();
-
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             depth_end - depth_start).count();
 
         int64_t elapsed = tm.elapsed_ms();
         int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
-
         uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
 
         auto pv_line = extractPV(board, depth);
-
         std::string pv_str;
         for (const auto& m : pv_line) pv_str += chess::uci::moveToUci(m) + " ";
-
         if (pv_str.empty()) pv_str = chess::uci::moveToUci(best_move);
 
         std::string score_str;
-
         if (best_score >= MATE_SCORE - 100) {
             int mate_in = (MATE_SCORE - best_score + 1) / 2;
             score_str = "mate " + std::to_string(mate_in);
@@ -1267,7 +1263,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 << " nodes " << stats.nodes
                 << " nps " << nps << " time "
                 << elapsed << " pv " << pv_str << "\n";
-
+        }
         tm.update_stability(best_move);
 
         if (rootPolicy.ok &&
@@ -1278,8 +1274,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             float pol_p = rootPolicy.top_prob_any;
             double scale = 1.0;
             const bool disagree = (pol_top != best_move);
-            const bool stable = (tm.stability_count >= 3);
-            const bool very_stable = (tm.stability_count >= 5);
+            const bool stable = (tm.get_stability_count() >= 3);
+            const bool very_stable = (tm.get_stability_count() >= 5);
 
             if (disagree) {
                 if (pol_p < POLICY_TM_UNCERTAIN) {
@@ -1305,6 +1301,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         } else {
             tm.set_policy_time_scale(1.0);
         }
+    }
 
 search_done:
 
