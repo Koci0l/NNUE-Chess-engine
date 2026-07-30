@@ -758,11 +758,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            if (is_quiet &&
-                (g_killerMoves.is_killer(ply_from_root, move) || move == counter_move)) {
-                reduction -= LMR_KILLER_COUNTER_REDUCTION;
-            }
-
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
