@@ -25,6 +25,8 @@ void initLMR() {
     }
 }
 
+static constexpr int LMR_KILLER_COUNTER_REDUCTION = 1;
+
 constexpr int SE_MIN_DEPTH = 5;
 constexpr int SE_DEPTH_TOL = 3;
 constexpr int SE_MARGIN_PER_DEPTH = 2;
@@ -746,8 +748,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
-
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            if (is_quiet &&
+                (g_killerMoves.is_killer(ply_from_root, move) || move == counter_move)) {
+                reduction -= LMR_KILLER_COUNTER_REDUCTION;
+            }
+
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
