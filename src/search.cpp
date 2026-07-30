@@ -1276,41 +1276,35 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             tm.soft_limit_ms < tm.hard_limit_ms) {
             chess::Move pol_top = rootPolicy.top_any;
             float pol_p = rootPolicy.top_prob_any;
-            float pol_ent = rootPolicy.entropy_any;
-
             double scale = 1.0;
-
             const bool disagree = (pol_top != best_move);
+            const bool stable = (tm.stability_count >= 3);
+            const bool very_stable = (tm.stability_count >= 5);
 
             if (disagree) {
-                scale = POLICY_TM_DISAGREE;
-
                 if (pol_p < POLICY_TM_UNCERTAIN) {
-                    scale = 1.50;
+                    scale = very_stable ? 1.10 : 1.50;
+                } else {
+                    scale = very_stable ? 1.10 : 1.35;
                 }
-            } else if (pol_p >= POLICY_TM_AGREE_CONF) {
-                scale = POLICY_TM_AGREE_S;
-            } else if (pol_p < POLICY_TM_UNCERTAIN) {
-                scale = POLICY_TM_UNCERTAIN_S;
+            } else {
+                if (pol_p >= 0.50f && very_stable && depth >= 8) {
+                    scale = 0.45;
+                } else if (pol_p >= 0.40f && stable && depth >= 7) {
+                    scale = 0.55;
+                } else if (pol_p >= POLICY_TM_AGREE_CONF && stable) {
+                    scale = 0.70;
+                } else if (pol_p >= POLICY_TM_AGREE_CONF) {
+                    scale = 0.88;
+                } else if (pol_p < POLICY_TM_UNCERTAIN) {
+                    scale = POLICY_TM_UNCERTAIN_S;
+                }
             }
 
             tm.set_policy_time_scale(scale);
-
-            if (!g_silent) {
-                std::cout << "info string policy_tm"
-                          << " depth " << depth
-                          << " scale " << scale
-                          << (disagree ? " disagree" : " agree")
-                          << " pol " << chess::uci::moveToUci(pol_top)
-                          << " (" << (pol_p * 100.f) << "%)"
-                          << " search " << chess::uci::moveToUci(best_move)
-                          << " ent " << pol_ent
-                          << std::endl;
-            }
         } else {
             tm.set_policy_time_scale(1.0);
         }
-    }
 
 search_done:
 
