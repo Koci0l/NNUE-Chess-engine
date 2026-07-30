@@ -3,15 +3,23 @@
 #include "types.h"   // ScoredMove, SearchStack, pieceValue, etc.
 #include <vector>
 
-// Forward decls only if not already fully defined via types.h
-// SearchStack is defined in types.h
+// Forward declaration so MovePickerContext can hold an optional policy pointer
+// without forcing every movepick user to include policy.h.
+struct RootPolicy;
 
+// ============================================================================
+// MovePickerContext
+// ============================================================================
 struct MovePickerContext {
     chess::Move tt_move{};
     chess::Move counter_move{};
     chess::Color side_to_move{};
     int ply = 0;
     SearchStack* ss = nullptr;
+
+    // Optional cached PV1 policy.
+    // If nullptr, MovePicker behaves exactly like the old pure-history picker.
+    const RootPolicy* policy = nullptr;
 
     MovePickerContext() = default;
 
@@ -21,9 +29,13 @@ struct MovePickerContext {
           counter_move(counter),
           side_to_move(side),
           ply(ply_),
-          ss(ss_) {}
+          ss(ss_),
+          policy(nullptr) {}
 };
 
+// ============================================================================
+// MovePicker stages
+// ============================================================================
 enum class MovePickStage {
     TT_MOVE,
     GENERATE_CAPTURES,
@@ -37,9 +49,13 @@ enum class MovePickStage {
     DONE
 };
 
+// ============================================================================
+// MovePicker
+// ============================================================================
 class MovePicker {
 public:
-    // Path A: use_policy ignored (no policy ordering)
+    // use_policy_unused is still ignored as a constructor argument.
+    // Policy usage is controlled by ctx.policy.
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 
@@ -89,6 +105,9 @@ private:
     void scoreQuiets();
 };
 
+// ============================================================================
+// QSearchMovePicker stages
+// ============================================================================
 enum class QMovePickStage {
     TT_MOVE,
     GENERATE_CAPTURES,
@@ -96,6 +115,9 @@ enum class QMovePickStage {
     DONE
 };
 
+// ============================================================================
+// QSearchMovePicker
+// ============================================================================
 class QSearchMovePicker {
 public:
     QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check);
@@ -126,11 +148,13 @@ private:
 
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
-
     void pickBest(ScoredMove* moves, int start, int end);
     void scoreCaptures();
 };
 
+// ============================================================================
+// Legacy helpers
+// ============================================================================
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx);
 

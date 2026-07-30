@@ -1,8 +1,7 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
-
-// NOTE: no policy.h — Path A does not use policy in the picker
+#include "policy.h"
 
 #include <algorithm>
 #include <cstring>
@@ -10,7 +9,6 @@
 // ============================================================================
 // MovePicker
 // ============================================================================
-
 MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                        int depth, bool skip_quiets, bool /*use_policy_unused*/)
     : m_board(board), m_ctx(ctx), m_depth(depth), m_skip_quiets(skip_quiets),
@@ -22,6 +20,7 @@ MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
       m_legal_generated(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
+
     (void)m_depth;
 }
 
@@ -119,8 +118,38 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
         }
     }
 
-    // Path A: pure history — no policy bonus
-    return hist + cont1 + cont2;
+    int score = hist + cont1 + cont2;
+
+    // Optional PV1 policy quiet ordering.
+    // This is only active when search passes a cached RootPolicy pointer.
+    if (m_ctx.policy != nullptr && m_ctx.policy->ok) {
+        int idx = m_ctx.policy->find(move);
+
+        if (idx >= 0 && m_ctx.policy->quiet_rank[idx] >= 0) {
+            float rel = m_ctx.policy->rel[idx];
+            float sharp = m_ctx.policy->quiet_sharpness;
+
+            int policy_bonus = int(1600.0f * rel * sharp);
+
+            if (policy_bonus < -5000) policy_bonus = -5000;
+            if (policy_bonus > 8000) policy_bonus = 8000;
+
+            int r = m_ctx.policy->quiet_rank[idx];
+
+            int rank_bonus = 0;
+            if (r == 0) rank_bonus = 6000;
+            else if (r == 1) rank_bonus = 3500;
+            else if (r <= 2) rank_bonus = 2000;
+            else if (r <= 5) rank_bonus = 900;
+            else if (r <= 10) rank_bonus = 250;
+
+            policy_bonus += int(rank_bonus * sharp);
+
+            score += policy_bonus;
+        }
+    }
+
+    return score;
 }
 
 void MovePicker::scoreCaptures() {
@@ -166,9 +195,7 @@ void MovePicker::scoreQuiets() {
 
         if (is_capture || is_promo) continue;
 
-        if (move == m_killer1 || move == m_killer2 || move == m_ctx.counter_move) {
-            continue;
-        }
+        if (move == m_killer1 || move == m_killer2 || move == m_ctx.counter_move) continue;
 
         if (m_quiet_count >= 256) break;
 
@@ -192,10 +219,9 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     if (isValid(m_ctx.tt_move)) {
                         m_last_score = 3000000;
 
-                        bool tt_capture =
-                            m_board.at(m_ctx.tt_move.to()) != chess::Piece::NONE ||
-                            m_ctx.tt_move.typeOf() == chess::Move::ENPASSANT ||
-                            m_ctx.tt_move.typeOf() == chess::Move::PROMOTION;
+                        bool tt_capture = m_board.at(m_ctx.tt_move.to()) != chess::Piece::NONE ||
+                                          m_ctx.tt_move.typeOf() == chess::Move::ENPASSANT ||
+                                          m_ctx.tt_move.typeOf() == chess::Move::PROMOTION;
 
                         is_quiet_out = !tt_capture;
                         return m_ctx.tt_move;
@@ -256,10 +282,9 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     ensureLegal();
 
                     if (isValid(m_killer1)) {
-                        bool is_capture =
-                            m_board.at(m_killer1.to()) != chess::Piece::NONE ||
-                            m_killer1.typeOf() == chess::Move::ENPASSANT ||
-                            m_killer1.typeOf() == chess::Move::PROMOTION;
+                        bool is_capture = m_board.at(m_killer1.to()) != chess::Piece::NONE ||
+                                          m_killer1.typeOf() == chess::Move::ENPASSANT ||
+                                          m_killer1.typeOf() == chess::Move::PROMOTION;
 
                         if (!is_capture) {
                             m_last_score = 1500000;
@@ -280,10 +305,9 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     ensureLegal();
 
                     if (isValid(m_killer2)) {
-                        bool is_capture =
-                            m_board.at(m_killer2.to()) != chess::Piece::NONE ||
-                            m_killer2.typeOf() == chess::Move::ENPASSANT ||
-                            m_killer2.typeOf() == chess::Move::PROMOTION;
+                        bool is_capture = m_board.at(m_killer2.to()) != chess::Piece::NONE ||
+                                          m_killer2.typeOf() == chess::Move::ENPASSANT ||
+                                          m_killer2.typeOf() == chess::Move::PROMOTION;
 
                         if (!is_capture) {
                             m_last_score = 1490000;
@@ -306,10 +330,9 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     ensureLegal();
 
                     if (isValid(m_ctx.counter_move)) {
-                        bool is_capture =
-                            m_board.at(m_ctx.counter_move.to()) != chess::Piece::NONE ||
-                            m_ctx.counter_move.typeOf() == chess::Move::ENPASSANT ||
-                            m_ctx.counter_move.typeOf() == chess::Move::PROMOTION;
+                        bool is_capture = m_board.at(m_ctx.counter_move.to()) != chess::Piece::NONE ||
+                                          m_ctx.counter_move.typeOf() == chess::Move::ENPASSANT ||
+                                          m_ctx.counter_move.typeOf() == chess::Move::PROMOTION;
 
                         if (!is_capture) {
                             m_last_score = 1250000;
@@ -384,7 +407,6 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 // ============================================================================
 // QSearchMovePicker  (no policy)
 // ============================================================================
-
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)
     : m_board(board), m_tt_move(tt_move), m_in_check(in_check),
       m_stage(QMovePickStage::TT_MOVE),
@@ -523,10 +545,9 @@ chess::Move QSearchMovePicker::next() {
 
                     if (isValid(m_tt_move)) {
                         if (!m_in_check) {
-                            bool is_tactical =
-                                m_board.at(m_tt_move.to()) != chess::Piece::NONE ||
-                                m_tt_move.typeOf() == chess::Move::PROMOTION ||
-                                m_tt_move.typeOf() == chess::Move::ENPASSANT;
+                            bool is_tactical = m_board.at(m_tt_move.to()) != chess::Piece::NONE ||
+                                               m_tt_move.typeOf() == chess::Move::PROMOTION ||
+                                               m_tt_move.typeOf() == chess::Move::ENPASSANT;
 
                             if (!is_tactical) break;
                         }
@@ -569,7 +590,6 @@ chess::Move QSearchMovePicker::next() {
 // ============================================================================
 // Legacy helpers
 // ============================================================================
-
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx) {
     if (move == ctx.tt_move && ctx.tt_move != chess::Move()) {
