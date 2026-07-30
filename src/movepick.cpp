@@ -120,32 +120,34 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // Optional PV1 policy quiet ordering.
-    // This is only active when search passes a cached RootPolicy pointer.
+    // ========================================================================
+    // PV1 policy quiet ordering — safe version
+    // ========================================================================
+    // Positive-only bonus.
+    // Only top 5 policy quiets.
+    // Only when policy is reasonably sharp/confident.
+    //
+    // This is intended as a small hint, not a dominant ordering signal.
     if (m_ctx.policy != nullptr && m_ctx.policy->ok) {
-        int idx = m_ctx.policy->find(move);
+        const float sharp = m_ctx.policy->quiet_sharpness;
 
-        if (idx >= 0 && m_ctx.policy->quiet_rank[idx] >= 0) {
-            float rel = m_ctx.policy->rel[idx];
-            float sharp = m_ctx.policy->quiet_sharpness;
+        if (sharp >= 0.40f && m_ctx.policy->top_quiet_prob >= 0.18f) {
+            int idx = m_ctx.policy->find(move);
 
-            int policy_bonus = int(1600.0f * rel * sharp);
+            if (idx >= 0) {
+                int r = m_ctx.policy->quiet_rank[idx];
 
-            if (policy_bonus < -5000) policy_bonus = -5000;
-            if (policy_bonus > 8000) policy_bonus = 8000;
+                if (r >= 0 && r <= 5) {
+                    int rank_bonus = 0;
 
-            int r = m_ctx.policy->quiet_rank[idx];
+                    if (r == 0)      rank_bonus = 900;
+                    else if (r == 1) rank_bonus = 500;
+                    else if (r == 2) rank_bonus = 250;
+                    else if (r <= 5) rank_bonus = 100;
 
-            int rank_bonus = 0;
-            if (r == 0) rank_bonus = 6000;
-            else if (r == 1) rank_bonus = 3500;
-            else if (r <= 2) rank_bonus = 2000;
-            else if (r <= 5) rank_bonus = 900;
-            else if (r <= 10) rank_bonus = 250;
-
-            policy_bonus += int(rank_bonus * sharp);
-
-            score += policy_bonus;
+                    score += int(rank_bonus * sharp);
+                }
+            }
         }
     }
 

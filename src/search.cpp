@@ -19,14 +19,15 @@ static int lmr_reductions[64][64];
 // ============================================================================
 // PV1 policy cache
 // ============================================================================
-// This caches policy information only for the position after pv[0].
-// It is refreshed after each completed depth and used in alphaBeta()
-// for quiet move ordering if the search reaches that exact position.
+// Cache policy information only for the position after pv[0].
+// Refresh after each completed depth.
+// Use in alphaBeta() for quiet ordering if search reaches that exact position.
 static uint64_t g_pv1_policy_key = 0;
 static RootPolicy g_pv1_policy;
 static int g_pv1_policy_depth = -1;
 
-static constexpr int PV1_POLICY_MIN_DEPTH = 4;
+// Be a bit conservative: do not trust very shallow PVs.
+static constexpr int PV1_POLICY_MIN_DEPTH = 6;
 
 // ============================================================================
 // LMR init
@@ -1368,15 +1369,17 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
-        auto pv_line = extractPV(board, depth);
-
-        // Refresh cached policy for the position after pv[0].
-        refreshPV1Policy(board, pv_line, depth);
-
+        // Measure actual search depth time before doing PV extraction / policy refresh.
         auto depth_end = std::chrono::high_resolution_clock::now();
 
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             depth_end - depth_start).count();
+
+        auto pv_line = extractPV(board, depth);
+
+        // Refresh cached policy for the position after pv[0].
+        // This is intentionally after last_depth_ms is computed.
+        refreshPV1Policy(board, pv_line, depth);
 
         int64_t elapsed = tm.elapsed_ms();
         int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);

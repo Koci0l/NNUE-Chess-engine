@@ -18,7 +18,7 @@ struct MovePickerContext {
     SearchStack* ss = nullptr;
 
     // Optional cached PV1 policy.
-    // If nullptr, MovePicker behaves exactly like the old pure-history picker.
+    // If nullptr, MovePicker behaves like the pure-history picker.
     const RootPolicy* policy = nullptr;
 
     MovePickerContext() = default;
