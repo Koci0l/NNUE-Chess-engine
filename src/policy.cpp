@@ -210,11 +210,10 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " moves=" << num_moves
               << " layers=3"
               << " bytes=" << size
-              << " mode=root_lmr+tm+interior"
+              << " mode=root_lmr+tm"
               << " lmr_top=" << POLICY_ROOT_LMR_TOP
               << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
               << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
-              << " interior_min_depth=" << POLICY_INTERIOR_MIN_DEPTH
               << std::endl;
     return true;
 }
@@ -506,24 +505,6 @@ static float logitForMoveIndex(const PolicyNet& net, const float* h, int mi) {
         logit += h[k] * row[k];
     }
     return logit;
-}
-
-// ============================================================================
-// Interior usage API (public)
-// ============================================================================
-
-void PolicyNet::computeHiddenForBoard(const chess::Board& board, float* h_out) const {
-    int feats[POLICY_MAX_ACTIVE];
-    int nfeats = 0;
-    collectFeatures(board, feats, nfeats);
-    computeHidden(*this, feats, nfeats, h_out);
-}
-
-float PolicyNet::logitFor(const chess::Board& board, const chess::Move& m,
-                          const float* h) const {
-    const int mi = mapMoveToIndex(board, m);
-    if (mi < 0) return -1e9f;
-    return logitForMoveIndex(*this, h, mi);
 }
 
 // ============================================================================
