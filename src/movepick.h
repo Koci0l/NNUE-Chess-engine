@@ -13,11 +13,8 @@ struct MovePickerContext {
     MovePickerContext() = default;
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
                       int ply_, SearchStack* ss_)
-        : tt_move(tt),
-          counter_move(counter),
-          side_to_move(side),
-          ply(ply_),
-          ss(ss_) {}
+        : tt_move(tt), counter_move(counter), side_to_move(side),
+          ply(ply_), ss(ss_) {}
 };
 
 enum class MovePickStage {
@@ -41,14 +38,9 @@ public:
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
 
-    // Policy rank of the move most recently returned by next().
-    // Returns -1 if policy was not computed or move is not a quiet.
-    int lastPolicyRank() const { return m_last_policy_rank; }
-
-    // Whether policy was actually computed at this node.
-    bool policyReady() const { return m_policy_ready; }
-
-    // Policy sharpness (0 = flat/unreliable, 1 = very peaked).
+    // Policy accessors for LMR in search.cpp
+    int   lastPolicyRank() const { return m_last_policy_rank; }
+    bool  policyReady() const { return m_policy_ready; }
     float policySharpness() const { return m_policy_sharp; }
 
 private:
@@ -79,7 +71,7 @@ private:
 
     // Policy state (computed lazily in scoreQuiets)
     bool  m_policy_ready = false;
-    int   m_policy_rank[256];   // indexed same as m_all_legal; -1 = not quiet
+    int   m_policy_rank[256];
     int   m_policy_nq = 0;
     float m_policy_sharp = 0.0f;
 
