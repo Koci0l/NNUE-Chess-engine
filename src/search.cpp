@@ -817,9 +817,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     return best_score;
 }
 
-// ============================================================================
-// search() — root with Week-1 policy fixes
-// ============================================================================
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
                    int64_t node_limit, int* score_out, uint64_t* nodes_out) {
     chess::Movelist moves;
@@ -903,9 +900,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             std::vector<RootScoredMove> root_moves;
             root_moves.reserve(moves.size());
 
-            // ================================================================
-            // scoreRootMove — Week 1: all-move policy bonus
-            // ================================================================
             auto scoreRootMove = [&](const chess::Move& move, bool& is_quiet_out) -> int {
                 if (move == best_move && best_move != chess::Move()) {
                     is_quiet_out = isQuietMove(board, move);
@@ -917,19 +911,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     move.typeOf() == chess::Move::ENPASSANT;
                 bool is_promo = move.typeOf() == chess::Move::PROMOTION;
                 is_quiet_out = !is_capture && !is_promo;
-
-                // ---- all-move policy sharpness (shared by both branches) ----
-                float any_sharp = 0.0f;
-                int   any_r     = -1;
-                if (rootPolicy.ok) {
-                    int idx = rootPolicy.find(move);
-                    if (idx >= 0) {
-                        any_r = rootPolicy.any_rank[idx];
-                        any_sharp = std::clamp(
-                            (0.95f - rootPolicy.norm_entropy_any) / 0.35f,
-                            0.0f, 1.0f);
-                    }
-                }
 
                 if (is_capture || is_promo) {
                     chess::Piece attacker_piece = board.at(move.from());
@@ -959,25 +940,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                             static_cast<int>(captured_piece.type())) / 16;
                     }
 
-                    // NEW: modest all-move policy bonus for tacticals
-                    // Orders within the good-capture / bad-capture tiers
-                    // without overriding the SEE-based tier split.
-                    if (any_r >= 0) {
-                        int pol = 0;
-                        if (any_r == 0)      pol = 2500;
-                        else if (any_r <= 2) pol = 1200;
-                        else if (any_r <= 5) pol = 500;
-                        else if (any_r >= rootPolicy.nlegal - 3) pol = -400;
-                        tactical += int(pol * any_sharp);
-                    }
-
                     if (chess::see::see_ge(board, move, 0)) {
                         return 2000000 + tactical;
                     }
                     return -1000000 + tactical;
                 }
 
-                // ---- quiet branch ----
                 int score = 0;
 
                 if (g_killerMoves.is_killer(0, move)) {
@@ -986,7 +954,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                 score += g_butterflyHistory.get(board.sideToMove(), move.from(), move.to());
 
-                // Existing quiet-rank policy bonus (unchanged)
                 if (rootPolicy.ok) {
                     int idx = rootPolicy.find(move);
                     if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
@@ -1008,17 +975,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         policy_bonus += int(rank_bonus * sharp);
                         score += policy_bonus;
                     }
-                }
-
-                // NEW: small all-move rank nudge for quiets too
-                // (helps when a quiet is policy top-1 overall but
-                //  not top quiet, or vice versa)
-                if (any_r >= 0) {
-                    int nudge = 0;
-                    if (any_r == 0)      nudge = 1500;
-                    else if (any_r <= 2) nudge = 700;
-                    else if (any_r >= rootPolicy.nlegal - 3) nudge = -300;
-                    score += int(nudge * any_sharp);
                 }
 
                 return score;
@@ -1079,34 +1035,16 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = lmr_reductions[std::min(depth, 63)]
                                                   [std::min(move_no, 63)];
 
-                        // ====================================================
-                        // Week 1: all-move-rank LMR guards
-                        // ====================================================
                         if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
-                            if (idx >= 0) {
-                                int ar = rootPolicy.any_rank[idx];
-
-                                // Never reduce policy top-2 (all moves)
-                                if (ar <= 1) {
-                                    reduction = 0;
-                                } else {
-                                    // Existing quiet-rel adjustment
-                                    if (rootPolicy.quiet_rank[idx] >= 0) {
-                                        float rel = rootPolicy.rel[idx];
-                                        float sharp = rootPolicy.quiet_sharpness;
-                                        float adj = -0.85f * rel;
-                                        if (adj < -2.0f) adj = -2.0f;
-                                        if (adj > 3.0f) adj = 3.0f;
-                                        adj *= sharp;
-                                        reduction += int(std::lround(adj));
-                                    }
-
-                                    // Extra reduction for policy tail
-                                    if (ar >= rootPolicy.nlegal / 2) {
-                                        reduction += 1;
-                                    }
-                                }
+                            if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
+                                float rel = rootPolicy.rel[idx];
+                                float sharp = rootPolicy.quiet_sharpness;
+                                float adj = -0.85f * rel;
+                                if (adj < -2.0f) adj = -2.0f;
+                                if (adj > 3.0f) adj = 3.0f;
+                                adj *= sharp;
+                                reduction += int(std::lround(adj));
                             }
                         }
 
@@ -1200,9 +1138,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         tm.update_stability(best_move);
 
-        // ================================================================
-        // Week 1: policy TM with entropy gate
-        // ================================================================
         if (rootPolicy.ok &&
             depth >= POLICY_TM_MIN_DEPTH &&
             node_limit <= 0 &&
@@ -1226,11 +1161,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 scale = POLICY_TM_UNCERTAIN_S;
             }
 
-            // NEW: entropy gate — when policy is diffuse, its TM
-            // signal is unreliable; fall back to neutral.
+            // === NEW: entropy gate (3 lines) ===
             if (rootPolicy.norm_entropy_any > POLICY_TM_ENTROPY_GATE) {
                 scale = 1.0;
             }
+            // ====================================
 
             tm.set_policy_time_scale(scale);
 
@@ -1243,7 +1178,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                           << " (" << (pol_p * 100.f) << "%)"
                           << " search " << chess::uci::moveToUci(best_move)
                           << " ent " << pol_ent
-                          << " nent " << rootPolicy.norm_entropy_any
                           << std::endl;
             }
         } else {

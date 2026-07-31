@@ -38,9 +38,7 @@ constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
 constexpr double POLICY_TM_DISAGREE     = 1.35;
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
 constexpr double POLICY_TM_AGREE_S      = 0.88;
-
-// NEW: entropy gate — above this, policy TM is unreliable
-constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;
+constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;   // <-- NEW
 
 constexpr float POLICY_REL_NONE = -1000.0f;
 
@@ -54,17 +52,10 @@ struct RootPolicy {
 
     chess::Movelist legals;
 
-    // --- quiet-only softmax (existing) ---
     float rel[256];
     float quiet_prob[256];
-    int   quiet_rank[256];          // -1 if not quiet
-
-    // --- all-move softmax (existing) ---
     float prob_any[256];
-
-    // --- NEW: all-move rank + relative log-prob ---
-    int   any_rank[256];            // 0 = best, -1 = unknown
-    float any_rel[256];             // log(prob_any * nlegal), POLICY_REL_NONE if unset
+    int   quiet_rank[256];
 
     chess::Move top_any;
     float top_prob_any = 0.0f;
@@ -92,18 +83,6 @@ struct RootPolicy {
     float rel_of(const chess::Move& m) const {
         const int i = find(m);
         return (i >= 0) ? rel[i] : POLICY_REL_NONE;
-    }
-
-    // NEW: all-move relative log-prob
-    float any_rel_of(const chess::Move& m) const {
-        const int i = find(m);
-        return (i >= 0) ? any_rel[i] : POLICY_REL_NONE;
-    }
-
-    // NEW: all-move rank (-1 = unknown)
-    int any_rank_of(const chess::Move& m) const {
-        const int i = find(m);
-        return (i >= 0) ? any_rank[i] : -1;
     }
 
     bool protected_quiet(const chess::Move& m) const {
@@ -206,8 +185,6 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         rp.quiet_prob[i] = 0.0f;
         rp.prob_any[i] = 0.0f;
         rp.quiet_rank[i] = -1;
-        rp.any_rank[i] = -1;          // NEW
-        rp.any_rel[i] = POLICY_REL_NONE; // NEW
     }
 
     if (!g_policy.loaded) {
@@ -225,7 +202,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         return false;
     }
 
-    // ---- All-legal-move softmax ----
+    // All-legal-move softmax
     float max_all = -1e30f;
     for (int i = 0; i < rp.nlegal; ++i) {
         max_all = std::max(max_all, logits[i]);
@@ -247,9 +224,6 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         const float p = probs_all[i] / sum_all;
         rp.prob_any[i] = p;
 
-        // NEW: all-move relative log-prob
-        rp.any_rel[i] = std::log(std::max(p, 1e-9f) * static_cast<float>(rp.nlegal));
-
         if (p > best_any_p) {
             best_any_p = p;
             best_any_i = i;
@@ -270,19 +244,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         rp.norm_entropy_any = 0.0f;
     }
 
-    // ---- NEW: all-move ranking ----
-    {
-        int order[256];
-        for (int i = 0; i < rp.nlegal; ++i) order[i] = i;
-        std::sort(order, order + rp.nlegal, [&](int a, int b) {
-            return rp.prob_any[a] > rp.prob_any[b];
-        });
-        for (int r = 0; r < rp.nlegal; ++r) {
-            rp.any_rank[order[r]] = r;
-        }
-    }
-
-    // ---- Quiet-only softmax (unchanged) ----
+    // Quiet-only softmax
     int qidx[256];
     int nq = 0;
     float max_q = -1e30f;
