@@ -1038,9 +1038,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
-
-                                if (rootPolicy.quiet_rank[idx] == 0) reduction = 0;
-
                                 float rel = rootPolicy.rel[idx];
                                 float sharp = rootPolicy.quiet_sharpness;
                                 float adj = -0.85f * rel;
@@ -1158,6 +1155,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (pol_p < POLICY_TM_UNCERTAIN) {
                     scale = 1.50;
                 }
+            } else if (pol_p >= 0.50f && rootPolicy.norm_entropy_any < 0.55f) {
+                scale = 0.45;   // strong agreement — bank time
             } else if (pol_p >= POLICY_TM_AGREE_CONF) {
                 scale = POLICY_TM_AGREE_S;
             } else if (pol_p < POLICY_TM_UNCERTAIN) {
