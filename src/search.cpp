@@ -1038,6 +1038,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
+
+                                if (rootPolicy.quiet_rank[idx] == 0) reduction = 0;
+
                                 float rel = rootPolicy.rel[idx];
                                 float sharp = rootPolicy.quiet_sharpness;
                                 float adj = -0.85f * rel;
