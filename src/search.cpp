@@ -407,13 +407,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // === Policy: pseudo-TT + pruning/LMR protection ===
+    // === Policy pseudo-TT (cached one-pass eval) ===
     const bool had_real_tt = (tt_hit && tt_move != chess::Move());
     PolicyNodeEval* pe = nullptr;
 
     if (!in_singular_search && !is_pv_node && depth >= 4 &&
         tt_move == chess::Move() && !in_check) {
-        // Pseudo-TT injection (cached one-pass eval replaces rootAdvice)
         if (g_policy.loaded && depth >= 8 && ply_from_root <= 3) {
             pe = getOrComputeNodePolicy(board, hash);
             if (pe && pe->top_any != chess::Move()) {
@@ -426,13 +425,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // Wider gate: compute policy for pruning/LMR protection only (no TT injection).
-    // Cache hit if pseudo-TT already computed it above.
-    if (!pe && g_policy.loaded && !is_pv_node && !in_check &&
-        !in_singular_search && !had_real_tt &&
-        depth >= 5 && ply_from_root <= 5) {
-        pe = getOrComputeNodePolicy(board, hash);
-    }
+    // NOTE: No eager wider-gate block here. Policy for pruning/LMR protection
+    // is computed lazily in the move loop below, only when a quiet is reached.
 
     int raw_static_eval = 0;
     int static_eval = 0;
@@ -613,6 +607,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         had_non_excluded_move = true;
         bool is_noisy = !is_quiet;
 
+        // === Lazy policy: compute ONLY when first quiet is reached ===
+        // Nodes that cut off on TT/capture/killer/counter never pay.
         int  policy_rank      = -1;
         bool policy_protected = false;
         if (is_quiet && !pe && g_policy.loaded && !is_pv_node && !in_check &&
@@ -626,11 +622,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 policy_protected = true;
         }
 
+        // Noisy SEE pruning (unchanged)
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
             continue;
         }
 
+        // Quiet SEE pruning (protected)
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2 &&
@@ -640,6 +638,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         }
 
+        // History pruning (protected)
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
             is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100 &&
             !policy_protected) {
@@ -648,6 +647,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (hist_score < -2000 * depth) continue;
         }
 
+        // LMP (protected)
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             move_count >= 3 + depth * depth) {
@@ -676,6 +676,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool gives_check = board.inCheck();
 
+        // Futility pruning (protected)
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100 && !policy_protected) {
@@ -709,7 +710,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
             // Policy LMR: allocate depth by net's quiet confidence
-            if (policy_rank >= 0 && pe->quiet_sharpness > 0.25f) {
+            if (policy_rank >= 0 && pe && pe->quiet_sharpness > 0.25f) {
                 if (policy_rank <= 1)      reduction -= 1;
                 else if (policy_rank > 8)  reduction += 1;
             }
