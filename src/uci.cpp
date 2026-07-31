@@ -287,11 +287,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                 }
             }
 
-        } else if (command == "policyflip") {
-            g_policy.l1_out_major = !g_policy.l1_out_major;
-            std::cout << "info string l1_out_major="
-                      << (g_policy.l1_out_major ? 1 : 0) << std::endl;
-
         } else if (command == "debug") {
             thread.accumulatorStack.resetAccumulators(board);
             g_nnue.debugNetwork(board, thread.accumulatorStack.current());
