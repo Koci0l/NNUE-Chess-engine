@@ -405,7 +405,18 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     }
 
     if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
-        depth--;
+        // Policy pseudo-TT: use net's top move instead of losing a ply
+        if (g_policy.loaded && depth >= 8 && ply_from_root <= 3) {
+            chess::Move pol_mv;
+            float pol_p = 0.0f;
+            if (g_policy.rootAdvice(board, pol_mv, pol_p) && pol_mv != chess::Move()) {
+                tt_move = pol_mv;
+            } else {
+                depth--;
+            }
+        } else {
+            depth--;
+        }
     }
 
     int raw_static_eval = 0;
