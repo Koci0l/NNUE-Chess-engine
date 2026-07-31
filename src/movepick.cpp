@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <cmath>
 
 // ============================================================================
 // MovePicker
@@ -111,15 +110,15 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // === Internal policy quiet ordering bonus ===
+    // Gentle policy nudge — helps AB, doesn't override it
     if (m_ctx.policy_quiet_rel && m_ctx.policy_legals) {
         for (int i = 0; i < m_ctx.policy_nlegal; ++i) {
             if ((*m_ctx.policy_legals)[i] == move) {
                 float rel = m_ctx.policy_quiet_rel[i];
                 if (rel > POLICY_REL_NONE + 1.0f) {
-                    float bonus = 1500.0f * rel * m_ctx.policy_sharpness;
-                    if (bonus < -6000.0f) bonus = -6000.0f;
-                    if (bonus >  8000.0f) bonus =  8000.0f;
+                    float bonus = 500.0f * rel * m_ctx.policy_sharpness;
+                    if (bonus < -3000.0f) bonus = -3000.0f;
+                    if (bonus >  4000.0f) bonus =  4000.0f;
                     score += int(bonus);
                 }
                 break;
@@ -348,7 +347,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 }
 
 // ============================================================================
-// QSearchMovePicker  (unchanged)
+// QSearchMovePicker
 // ============================================================================
 QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check)
     : m_board(board), m_tt_move(tt_move), m_in_check(in_check),
@@ -512,7 +511,7 @@ chess::Move QSearchMovePicker::next() {
 }
 
 // ============================================================================
-// Legacy helpers (unchanged)
+// Legacy helpers
 // ============================================================================
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx) {

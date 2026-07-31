@@ -13,13 +13,6 @@
 #include <iostream>
 #include <vector>
 
-#if defined(__AVX2__)
-#include <immintrin.h>
-#define POLICY_HAS_AVX2 1
-#else
-#define POLICY_HAS_AVX2 0
-#endif
-
 PolicyNet g_policy;
 
 // ============================================================================
@@ -214,11 +207,6 @@ bool PolicyNet::loadFromMemory(const std::uint8_t* data, std::size_t size, const
               << " lmr_top=" << POLICY_ROOT_LMR_TOP
               << " lmr_min_depth=" << POLICY_ROOT_LMR_MIN_DEPTH
               << " tm_min_depth=" << POLICY_TM_MIN_DEPTH
-#if POLICY_HAS_AVX2
-              << " simd=avx2"
-#else
-              << " simd=scalar"
-#endif
               << std::endl;
     return true;
 }
@@ -356,7 +344,8 @@ void PolicyNet::collectFeatures(const chess::Board& board, int* feats, int& nfea
 // ============================================================================
 // Move index
 // ============================================================================
-int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) const {
+int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m,
+                              bool force_good_see) const {
     const int ksq = stmKingIndex(board);
     const int hm  = ((ksq % 8) > 3) ? 7 : 0;
     const int flip = hm ^ ((board.sideToMove() == chess::Color::BLACK) ? 56 : 0);
@@ -414,12 +403,15 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
     }
 
     bool good_see = false;
+    if (force_good_see) {
+        good_see = true;
+    }
 #if POLICY_CASTLE_SEE_FORCE >= 0
-    if (is_castle) {
+    else if (is_castle) {
         good_see = (POLICY_CASTLE_SEE_FORCE != 0);
-    } else
+    }
 #endif
-    if (is_castle) {
+    else if (is_castle) {
 #if POLICY_CASTLE_SEE_FORCE < 0
         const chess::Square from_sq = m.from();
         const chess::Square to_sq(static_cast<chess::Square::underlying>(to_b));
@@ -436,22 +428,6 @@ int PolicyNet::mapMoveToIndex(const chess::Board& board, const chess::Move& m) c
 }
 
 // ============================================================================
-// SIMD helpers
-// ============================================================================
-#if POLICY_HAS_AVX2
-
-static inline float hsum256(__m256 v) {
-    __m128 hi = _mm256_extractf128_ps(v, 1);
-    __m128 lo = _mm256_castps256_ps128(v);
-    __m128 s  = _mm_add_ps(hi, lo);
-    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
-    s = _mm_add_ss(s, _mm_shuffle_ps(s, s, 1));
-    return _mm_cvtss_f32(s);
-}
-
-#endif // POLICY_HAS_AVX2
-
-// ============================================================================
 // Hidden (2-layer: l0 -> crelu -> pm -> l1 -> crelu -> pm)
 // ============================================================================
 static void computeHidden(const PolicyNet& net,
@@ -460,126 +436,48 @@ static void computeHidden(const PolicyNet& net,
     // --- Layer 0: sparse gather -> HL ---
     float h0[POLICY_HL];
     std::memcpy(h0, net.l0b.data(), sizeof(float) * POLICY_HL);
-
     for (int i = 0; i < nfeats; ++i) {
         const int f = feats[i];
         if (f < 0 || f >= POLICY_INPUT_SIZE) continue;
         const float* row = net.l0w.data() + size_t(f) * size_t(POLICY_HL);
-
-#if POLICY_HAS_AVX2
-        int j = 0;
-        for (; j + 8 <= POLICY_HL; j += 8) {
-            __m256 acc = _mm256_loadu_ps(h0 + j);
-            __m256 w   = _mm256_loadu_ps(row + j);
-            _mm256_storeu_ps(h0 + j, _mm256_add_ps(acc, w));
-        }
-        for (; j < POLICY_HL; ++j) h0[j] += row[j];
-#else
         for (int j = 0; j < POLICY_HL; ++j) {
             h0[j] += row[j];
         }
-#endif
     }
 
     // CReLU + pairwise_mul -> HL_PAIR
     float h1[POLICY_HL_PAIR];
-
-#if POLICY_HAS_AVX2
-    {
-        const __m256 zero = _mm256_setzero_ps();
-        const __m256 one  = _mm256_set1_ps(1.0f);
-        int i = 0;
-        for (; i + 8 <= POLICY_HL_PAIR; i += 8) {
-            __m256 lo = _mm256_loadu_ps(h0 + i);
-            __m256 hi = _mm256_loadu_ps(h0 + i + POLICY_HL_PAIR);
-            lo = _mm256_min_ps(_mm256_max_ps(lo, zero), one);
-            hi = _mm256_min_ps(_mm256_max_ps(hi, zero), one);
-            _mm256_storeu_ps(h1 + i, _mm256_mul_ps(lo, hi));
-        }
-        for (; i < POLICY_HL_PAIR; ++i) {
-            h1[i] = crelu01(h0[i]) * crelu01(h0[i + POLICY_HL_PAIR]);
-        }
-    }
-#else
     for (int i = 0; i < POLICY_HL_PAIR; ++i) {
         h1[i] = crelu01(h0[i]) * crelu01(h0[i + POLICY_HL_PAIR]);
     }
-#endif
 
     // --- Layer 1: dense matmul HL_PAIR -> HL ---
     float h2[POLICY_HL];
     std::memcpy(h2, net.l1b.data(), sizeof(float) * POLICY_HL);
-
     for (int i = 0; i < POLICY_HL_PAIR; ++i) {
         if (h1[i] == 0.0f) continue;
         const float* row = net.l1w.data() + size_t(i) * size_t(POLICY_HL);
-
-#if POLICY_HAS_AVX2
-        const __m256 s = _mm256_set1_ps(h1[i]);
-        int j = 0;
-        for (; j + 8 <= POLICY_HL; j += 8) {
-            __m256 acc = _mm256_loadu_ps(h2 + j);
-            __m256 w   = _mm256_loadu_ps(row + j);
-            _mm256_storeu_ps(h2 + j, _mm256_fmadd_ps(s, w, acc));
-        }
-        for (; j < POLICY_HL; ++j) h2[j] += h1[i] * row[j];
-#else
         for (int j = 0; j < POLICY_HL; ++j) {
             h2[j] += h1[i] * row[j];
         }
-#endif
     }
 
     // CReLU + pairwise_mul -> HL_PAIR
-#if POLICY_HAS_AVX2
-    {
-        const __m256 zero = _mm256_setzero_ps();
-        const __m256 one  = _mm256_set1_ps(1.0f);
-        int i = 0;
-        for (; i + 8 <= POLICY_HL_PAIR; i += 8) {
-            __m256 lo = _mm256_loadu_ps(h2 + i);
-            __m256 hi = _mm256_loadu_ps(h2 + i + POLICY_HL_PAIR);
-            lo = _mm256_min_ps(_mm256_max_ps(lo, zero), one);
-            hi = _mm256_min_ps(_mm256_max_ps(hi, zero), one);
-            _mm256_storeu_ps(h_out + i, _mm256_mul_ps(lo, hi));
-        }
-        for (; i < POLICY_HL_PAIR; ++i) {
-            h_out[i] = crelu01(h2[i]) * crelu01(h2[i + POLICY_HL_PAIR]);
-        }
-    }
-#else
     for (int i = 0; i < POLICY_HL_PAIR; ++i) {
         h_out[i] = crelu01(h2[i]) * crelu01(h2[i + POLICY_HL_PAIR]);
     }
-#endif
 }
 
 // ============================================================================
 // Output logit (layer 2)
 // ============================================================================
 static float logitForMoveIndex(const PolicyNet& net, const float* h, int mi) {
-    const float* row = net.l2w.data() + size_t(mi) * size_t(POLICY_HL_PAIR);
-
-#if POLICY_HAS_AVX2
-    __m256 acc = _mm256_setzero_ps();
-    int k = 0;
-    for (; k + 8 <= POLICY_HL_PAIR; k += 8) {
-        __m256 hv = _mm256_loadu_ps(h + k);
-        __m256 wv = _mm256_loadu_ps(row + k);
-        acc = _mm256_fmadd_ps(hv, wv, acc);
-    }
-    float logit = net.l2b[static_cast<size_t>(mi)] + hsum256(acc);
-    for (; k < POLICY_HL_PAIR; ++k) {
-        logit += h[k] * row[k];
-    }
-    return logit;
-#else
     float logit = net.l2b[static_cast<size_t>(mi)];
+    const float* row = net.l2w.data() + size_t(mi) * size_t(POLICY_HL_PAIR);
     for (int k = 0; k < POLICY_HL_PAIR; ++k) {
         logit += h[k] * row[k];
     }
     return logit;
-#endif
 }
 
 // ============================================================================
@@ -682,6 +580,37 @@ bool PolicyNet::rankLegalQuiets(const chess::Board& board,
         out_rank[quiet_i[q]] = rank;
     }
     return true;
+}
+
+// ============================================================================
+// Quiet-only logits — no captures, no SEE
+// ============================================================================
+bool PolicyNet::logitsQuietsOnly(const chess::Board& board,
+                                 const chess::Movelist& moves,
+                                 float* out_logits,
+                                 int* out_quiet_idx,
+                                 int& out_nq) const {
+    if (!loaded || moves.empty()) return false;
+
+    int feats[POLICY_MAX_ACTIVE];
+    int nfeats = 0;
+    collectFeatures(board, feats, nfeats);
+
+    float h[POLICY_HL_PAIR];
+    computeHidden(*this, feats, nfeats, h);
+
+    out_nq = 0;
+    const int n = static_cast<int>(moves.size());
+    for (int i = 0; i < n; ++i) {
+        if (!isQuietMoveLocal(board, moves[i])) continue;
+        // Quiets always have SEE >= 0 — skip the expensive SEE call
+        const int mi = mapMoveToIndex(board, moves[i], /*force_good_see=*/true);
+        if (mi < 0) continue;
+        out_quiet_idx[out_nq] = i;
+        out_logits[out_nq] = logitForMoveIndex(*this, h, mi);
+        ++out_nq;
+    }
+    return out_nq > 0;
 }
 
 // ============================================================================

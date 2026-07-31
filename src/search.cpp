@@ -48,10 +48,6 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
-// Internal policy gate
-constexpr int INT_POLICY_MIN_DEPTH = 6;
-constexpr int INT_POLICY_MAX_PLY   = 2;
-
 inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
@@ -354,21 +350,19 @@ int quiescence(chess::Board& board, int alpha, int beta,
 }
 
 // ============================================================================
-// Internal policy helper — compute quiet rel/rank/sharpness from logits
+// Internal policy — computed only at TT-miss nodes
 // ============================================================================
 struct IntPolicy {
     bool ok = false;
     int nlegal = 0;
-    float quiet_rel[256];     // POLICY_REL_NONE for non-quiets
-    int   quiet_rank[256];    // -1 for non-quiets
+    float quiet_rel[256];
+    int   quiet_rank[256];
     float sharpness = 0.0f;
     chess::Movelist legals;
-    float logits[256];
 
     int find(const chess::Move& m) const {
-        for (int i = 0; i < nlegal; ++i) {
+        for (int i = 0; i < nlegal; ++i)
             if (legals[i] == m) return i;
-        }
         return -1;
     }
 };
@@ -377,35 +371,31 @@ static void computeIntPolicy(const chess::Board& board, IntPolicy& ip) {
     ip.ok = false;
     ip.nlegal = 0;
     ip.sharpness = 0.0f;
-
     if (!g_policy.loaded) return;
 
     chess::movegen::legalmoves(ip.legals, board);
     ip.nlegal = static_cast<int>(ip.legals.size());
     if (ip.nlegal < 1 || ip.nlegal > 256) return;
 
-    if (!g_policy.logitsLegalMoves(board, ip.legals, ip.logits)) return;
-
-    // Init
     for (int i = 0; i < ip.nlegal; ++i) {
         ip.quiet_rel[i] = POLICY_REL_NONE;
         ip.quiet_rank[i] = -1;
     }
 
-    // Quiet-only softmax
-    int qidx[256];
-    int nq = 0;
+    // Quiet-only logits — no SEE, no capture logits
+    float qlogits[256];
+    int   qidx[256];
+    int   nq = 0;
+    if (!g_policy.logitsQuietsOnly(board, ip.legals, qlogits, qidx, nq)) return;
+    if (nq < 2) return;
+
+    // Quiet softmax
     float max_q = -1e30f;
-    for (int i = 0; i < ip.nlegal; ++i) {
-        if (!policyQuietLocal(board, ip.legals[i])) continue;
-        qidx[nq++] = i;
-        max_q = std::max(max_q, ip.logits[i]);
-    }
-    if (nq < 2) return;  // ordering irrelevant with 0-1 quiets
+    for (int j = 0; j < nq; ++j) max_q = std::max(max_q, qlogits[j]);
 
     float qp[256], sum_q = 0.0f;
     for (int j = 0; j < nq; ++j) {
-        qp[j] = std::exp(ip.logits[qidx[j]] - max_q);
+        qp[j] = std::exp(qlogits[j] - max_q);
         sum_q += qp[j];
     }
     if (sum_q <= 0.0f) sum_q = 1.0f;
@@ -421,16 +411,14 @@ static void computeIntPolicy(const chess::Board& board, IntPolicy& ip) {
     int order[256];
     for (int j = 0; j < nq; ++j) order[j] = j;
     std::sort(order, order + nq, [&](int a, int b) { return qp[a] > qp[b]; });
-    for (int r = 0; r < nq; ++r) {
+    for (int r = 0; r < nq; ++r)
         ip.quiet_rank[qidx[order[r]]] = r;
-    }
 
     // Sharpness (same formula as root)
     float nent = (nq > 1) ? float(ent / std::log(float(nq))) : 0.0f;
     float sharp = std::clamp((0.90f - nent) / 0.35f, 0.0f, 1.0f);
     if (qp[order[0]] < 0.12f) sharp *= 0.5f;
     ip.sharpness = sharp;
-
     ip.ok = true;
 }
 
@@ -650,12 +638,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     }
 
     // ================================================================
-    // Internal policy: compute once per node at shallow plies
+    // Policy nudge: only at TT-miss nodes where AB ordering is weakest
     // ================================================================
     IntPolicy intPol;
-    if (g_policy.loaded && !in_check && !in_singular_search &&
-        ply_from_root >= 1 && ply_from_root <= INT_POLICY_MAX_PLY &&
-        depth >= INT_POLICY_MIN_DEPTH) {
+    if (g_policy.loaded && tt_move == chess::Move() && !in_check &&
+        !in_singular_search && depth >= 8 &&
+        ply_from_root >= 1 && ply_from_root <= 2) {
         computeIntPolicy(board, intPol);
     }
 
@@ -663,15 +651,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-
-    // Wire policy into picker for quiet ordering
     if (intPol.ok) {
-        mpCtx.policy_quiet_rel = intPol.quiet_rel;
-        mpCtx.policy_legals = &intPol.legals;
-        mpCtx.policy_nlegal = intPol.nlegal;
-        mpCtx.policy_sharpness = intPol.sharpness;
+        mpCtx.policy_quiet_rel  = intPol.quiet_rel;
+        mpCtx.policy_legals     = &intPol.legals;
+        mpCtx.policy_nlegal     = intPol.nlegal;
+        mpCtx.policy_sharpness  = intPol.sharpness;
     }
-
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
@@ -694,15 +679,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool is_noisy = !is_quiet;
 
-        // Policy protection flag for this move
-        bool pol_protected = false;
-        if (intPol.ok && is_quiet) {
-            int pidx = intPol.find(move);
-            if (pidx >= 0 && intPol.quiet_rank[pidx] <= 1 && intPol.sharpness > 0.3f) {
-                pol_protected = true;
-            }
-        }
-
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
             continue;
@@ -711,7 +687,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2) {
-            if (!pol_protected && !chess::see::see_ge(board, move, -50 * depth)) {
+            if (!chess::see::see_ge(board, move, -50 * depth)) {
                 continue;
             }
         }
@@ -720,13 +696,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
-            if (!pol_protected && hist_score < -2000 * depth) continue;
+            if (hist_score < -2000 * depth) continue;
         }
 
-        // LMP: don't prune policy-protected quiets
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            !pol_protected &&
             move_count >= 3 + depth * depth) {
             break;
         }
@@ -753,12 +727,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool gives_check = board.inCheck();
 
-        // Futility: don't prune policy-protected quiets
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = 100 + 80 * depth;
-            if (!pol_protected && static_eval + futility_margin <= alpha) {
+            if (static_eval + futility_margin <= alpha) {
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
                 continue;
@@ -786,14 +759,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            // === Internal policy LMR ===
-            if (intPol.ok) {
+            // Gentle policy LMR nudge
+            if (intPol.ok && is_quiet) {
                 int pidx = intPol.find(move);
                 if (pidx >= 0 && intPol.quiet_rank[pidx] >= 0) {
-                    float rel = intPol.quiet_rel[pidx];
-                    float adj = -0.75f * rel * intPol.sharpness;
-                    if (adj < -2.0f) adj = -2.0f;
-                    if (adj >  2.0f) adj =  2.0f;
+                    float adj = -0.40f * intPol.quiet_rel[pidx] * intPol.sharpness;
+                    if (adj < -1.5f) adj = -1.5f;
+                    if (adj >  1.5f) adj =  1.5f;
                     reduction += int(std::lround(adj));
                 }
             }

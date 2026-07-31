@@ -38,7 +38,6 @@ constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
 constexpr double POLICY_TM_DISAGREE     = 1.35;
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
 constexpr double POLICY_TM_AGREE_S      = 0.88;
-constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;   // <-- NEW
 
 constexpr float POLICY_REL_NONE = -1000.0f;
 
@@ -105,13 +104,10 @@ struct PolicyNet {
     int from_to   = 0;
     int num_moves = 0;
 
-    // Layer 0: INPUT_SIZE -> HL (sparse input)
     std::vector<float> l0w;
     std::vector<float> l0b;
-    // Layer 1: HL_PAIR -> HL (dense input, middle)
     std::vector<float> l1w;
     std::vector<float> l1b;
-    // Layer 2: HL_PAIR -> num_moves (dense input, output)
     std::vector<float> l2w;
     std::vector<float> l2b;
 
@@ -140,8 +136,16 @@ struct PolicyNet {
                     float& out_top1_prob,
                     float* entropy_out = nullptr) const;
 
+    // Quiet-only logits — skips captures and SEE entirely
+    bool logitsQuietsOnly(const chess::Board& board,
+                          const chess::Movelist& moves,
+                          float* out_logits,
+                          int* out_quiet_idx,
+                          int& out_nq) const;
+
     void collectFeatures(const chess::Board& board, int* feats, int& nfeats) const;
-    int  mapMoveToIndex(const chess::Board& board, const chess::Move& m) const;
+    int  mapMoveToIndex(const chess::Board& board, const chess::Move& m,
+                        bool force_good_see = false) const;
 
     void debugPosition(const chess::Board& board, int topN = 16) const;
     void debugMove(const chess::Board& board, const chess::Move& m) const;

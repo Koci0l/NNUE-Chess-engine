@@ -10,8 +10,8 @@ struct MovePickerContext {
     int ply = 0;
     SearchStack* ss = nullptr;
 
-    // Internal policy (nullptr = disabled)
-    const float* policy_quiet_rel = nullptr;   // indexed same as policy_legals
+    // Internal policy nudge (nullptr = disabled)
+    const float* policy_quiet_rel = nullptr;
     const chess::Movelist* policy_legals = nullptr;
     int policy_nlegal = 0;
     float policy_sharpness = 0.0f;
