@@ -1,12 +1,7 @@
 #pragma once
-
 #include "chess.hpp"
-#include "types.h"   // ScoredMove, SearchStack, pieceValue, etc.
-
+#include "types.h"
 #include <vector>
-
-// Forward decls only if not already fully defined via types.h
-// SearchStack is defined in types.h
 
 struct MovePickerContext {
     chess::Move tt_move{};
@@ -16,7 +11,6 @@ struct MovePickerContext {
     SearchStack* ss = nullptr;
 
     MovePickerContext() = default;
-
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
                       int ply_, SearchStack* ss_)
         : tt_move(tt),
@@ -41,19 +35,28 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
-    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-               int depth, bool skip_quiets, bool use_policy_unused = false);
+               int depth, bool skip_quiets, bool use_policy = false);
 
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
+
+    // Policy rank of the move most recently returned by next().
+    // Returns -1 if policy was not computed or move is not a quiet.
+    int lastPolicyRank() const { return m_last_policy_rank; }
+
+    // Whether policy was actually computed at this node.
+    bool policyReady() const { return m_policy_ready; }
+
+    // Policy sharpness (0 = flat/unreliable, 1 = very peaked).
+    float policySharpness() const { return m_policy_sharp; }
 
 private:
     const chess::Board& m_board;
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
-
+    bool m_use_policy;
     MovePickStage m_stage;
 
     chess::Move m_killer1{};
@@ -72,21 +75,27 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
-    chess::Move m_returned[512];
-    int m_returned_count = 0;
+    int m_last_policy_rank = -1;
+
+    // Policy state (computed lazily in scoreQuiets)
+    bool  m_policy_ready = false;
+    int   m_policy_rank[256];   // indexed same as m_all_legal; -1 = not quiet
+    int   m_policy_nq = 0;
+    float m_policy_sharp = 0.0f;
 
     chess::Movelist m_all_legal;
     bool m_legal_generated = false;
 
-    bool wasReturned(const chess::Move& move) const;
-    void markReturned(const chess::Move& move);
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
     int scoreOneCapture(const chess::Move& move);
     int scoreOneQuiet(const chess::Move& move);
     void scoreCaptures();
     void scoreQuiets();
+    void computePolicyRanks();
 };
+
+// ============================================================================
 
 enum class QMovePickStage {
     TT_MOVE,
@@ -98,6 +107,7 @@ enum class QMovePickStage {
 class QSearchMovePicker {
 public:
     QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check);
+
     chess::Move next();
     int lastScore() const { return m_last_score; }
 
@@ -112,25 +122,20 @@ private:
     int m_move_idx = 0;
     int m_last_score = 0;
 
-    chess::Move m_returned[256];
-    int m_returned_count = 0;
-
     chess::Movelist m_legal;
     bool m_legal_generated = false;
 
-    bool wasReturned(const chess::Move& move) const;
-    void markReturned(const chess::Move& move);
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
     void pickBest(ScoredMove* moves, int start, int end);
     void scoreCaptures();
 };
 
+// ============================================================================
+
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx);
-
 std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves,
                                    const chess::Board& board,
                                    const MovePickerContext& ctx);
-
 void pickNextMove(std::vector<ScoredMove>& moves, size_t current);

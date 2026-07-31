@@ -1,5 +1,4 @@
 #pragma once
-
 #include "chess.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -39,7 +38,7 @@ constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
 constexpr double POLICY_TM_DISAGREE     = 1.35;
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
 constexpr double POLICY_TM_AGREE_S      = 0.88;
-constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;
+constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;   // <-- NEW
 
 constexpr float POLICY_REL_NONE = -1000.0f;
 
@@ -50,25 +49,19 @@ struct RootPolicy {
     bool ok = false;
     int nlegal = 0;
     int nq = 0;
+
     chess::Movelist legals;
 
-    // Per-legal-move arrays (indexed by position in legals)
     float rel[256];
     float quiet_prob[256];
     float prob_any[256];
     int   quiet_rank[256];
 
-    // All-move ranking (NEW)
-    int   rank_any[256];
-    float rel_any[256];
-
-    // All-move summary
     chess::Move top_any;
     float top_prob_any = 0.0f;
     float entropy_any = 0.0f;
     float norm_entropy_any = 1.0f;
 
-    // Quiet-only summary
     chess::Move top_quiet;
     float top_quiet_prob = 0.0f;
     float quiet_entropy = 0.0f;
@@ -112,10 +105,13 @@ struct PolicyNet {
     int from_to   = 0;
     int num_moves = 0;
 
+    // Layer 0: INPUT_SIZE -> HL (sparse input)
     std::vector<float> l0w;
     std::vector<float> l0b;
+    // Layer 1: HL_PAIR -> HL (dense input, middle)
     std::vector<float> l1w;
     std::vector<float> l1b;
+    // Layer 2: HL_PAIR -> num_moves (dense input, output)
     std::vector<float> l2w;
     std::vector<float> l2b;
 
@@ -189,8 +185,6 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         rp.quiet_prob[i] = 0.0f;
         rp.prob_any[i] = 0.0f;
         rp.quiet_rank[i] = -1;
-        rp.rank_any[i] = -1;
-        rp.rel_any[i] = POLICY_REL_NONE;
     }
 
     if (!g_policy.loaded) {
@@ -208,7 +202,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         return false;
     }
 
-    // ---- All-legal-move softmax ----
+    // All-legal-move softmax
     float max_all = -1e30f;
     for (int i = 0; i < rp.nlegal; ++i) {
         max_all = std::max(max_all, logits[i]);
@@ -225,9 +219,11 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
     int best_any_i = 0;
     float best_any_p = -1.0f;
     double ent_any = 0.0;
+
     for (int i = 0; i < rp.nlegal; ++i) {
         const float p = probs_all[i] / sum_all;
         rp.prob_any[i] = p;
+
         if (p > best_any_p) {
             best_any_p = p;
             best_any_i = i;
@@ -240,6 +236,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
     rp.top_any = rp.legals[best_any_i];
     rp.top_prob_any = best_any_p;
     rp.entropy_any = static_cast<float>(ent_any);
+
     if (rp.nlegal > 1) {
         rp.norm_entropy_any =
             static_cast<float>(ent_any / std::log(static_cast<float>(rp.nlegal)));
@@ -247,22 +244,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         rp.norm_entropy_any = 0.0f;
     }
 
-    // ---- All-move ranking (NEW) ----
-    {
-        int order_all[256];
-        for (int i = 0; i < rp.nlegal; ++i) order_all[i] = i;
-        std::sort(order_all, order_all + rp.nlegal, [&](int a, int b) {
-            return rp.prob_any[a] > rp.prob_any[b];
-        });
-        for (int r = 0; r < rp.nlegal; ++r) {
-            const int i = order_all[r];
-            rp.rank_any[i] = r;
-            rp.rel_any[i] =
-                std::log(std::max(rp.prob_any[i], 1e-9f) * static_cast<float>(rp.nlegal));
-        }
-    }
-
-    // ---- Quiet-only softmax ----
+    // Quiet-only softmax
     int qidx[256];
     int nq = 0;
     float max_q = -1e30f;
@@ -295,7 +277,6 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         std::sort(order, order + nq, [&](int a, int b) {
             return qp[a] > qp[b];
         });
-
         for (int r = 0; r < nq; ++r) {
             const int legal_i = qidx[order[r]];
             rp.quiet_rank[legal_i] = r;
