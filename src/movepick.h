@@ -21,8 +21,6 @@ enum class MovePickStage {
     TT_MOVE,
     GENERATE_CAPTURES,
     GOOD_CAPTURES,
-    KILLER_1,
-    KILLER_2,
     COUNTER_MOVE,
     GENERATE_QUIETS,
     QUIETS,
@@ -38,7 +36,6 @@ public:
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
 
-    // Policy accessors for LMR in search.cpp
     int   lastPolicyRank() const { return m_last_policy_rank; }
     bool  policyReady() const { return m_policy_ready; }
     float policySharpness() const { return m_policy_sharp; }
@@ -50,9 +47,6 @@ private:
     bool m_skip_quiets;
     bool m_use_policy;
     MovePickStage m_stage;
-
-    chess::Move m_killer1{};
-    chess::Move m_killer2{};
 
     ScoredMove m_captures[256];
     int m_capture_count = 0;
@@ -69,7 +63,6 @@ private:
     int m_last_score = 0;
     int m_last_policy_rank = -1;
 
-    // Policy state (computed lazily in scoreQuiets)
     bool  m_policy_ready = false;
     int   m_policy_rank[256];
     int   m_policy_nq = 0;
