@@ -920,7 +920,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             // Tier 4: remaining quiets                   1,000,000 + history + policy
             // Tier 5: bad captures                      -1,000,000 + tactical
             auto scoreRootMove = [&](const chess::Move& move, bool& is_quiet_out) -> int {
-                // Tier 0
+                // Tier 0: previous iteration best
                 if (move == best_move && best_move != chess::Move()) {
                     is_quiet_out = isQuietMove(board, move);
                     return 3000000;
@@ -939,12 +939,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 bool policy_confident =
                     rootPolicy.ok && rootPolicy.norm_entropy_any < 0.80f;
 
-                // Tier 1: policy-confident top-3 quiets (above captures)
-                if (is_quiet_out && policy_confident && ra <= 2 && sharp > 0.25f) {
-                    return 2500000 - ra * 100;
-                }
-
-                // Captures / promotions
+                // Tier 1: SEE-good captures/promotions (searched first to raise alpha)
                 if (is_capture || is_promo) {
                     chess::Piece attacker_piece = board.at(move.from());
                     chess::Piece captured_piece = chess::Piece::NONE;
@@ -969,12 +964,16 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                             move.to().index(),
                             static_cast<int>(captured_piece.type())) / 16;
                     }
-                    // Tier 2: SEE-good
                     if (chess::see::see_ge(board, move, 0)) {
                         return 2000000 + tactical;
                     }
-                    // Tier 5: bad
+                    // Tier 5: bad captures
                     return -1000000 + tactical;
+                }
+
+                // Tier 2: policy-confident top-3 quiets (below captures, above killers)
+                if (policy_confident && ra <= 2 && sharp > 0.25f) {
+                    return 1800000 - ra * 100;
                 }
 
                 // Tier 3: killer quiets
