@@ -5,7 +5,7 @@
 #include "see.h"
 #include "zobrist.h"
 #include "policy.h"
-#include "policy_cache.h"     // === STEP 0 === one-pass cached internal policy
+#include "policy_cache.h"
 #include <iostream>
 #include <cmath>
 #include <algorithm>
@@ -407,14 +407,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // === STEP 0 === capture original TT state BEFORE any policy injection
+    // === Policy: pseudo-TT + pruning/LMR protection ===
     const bool had_real_tt = (tt_hit && tt_move != chess::Move());
+    PolicyNodeEval* pe = nullptr;
 
-    if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
-        // Policy pseudo-TT: use the net's top move instead of losing a ply.
-        // Shares the one-pass cached eval with the MovePicker (no double compute).
+    if (!in_singular_search && !is_pv_node && depth >= 4 &&
+        tt_move == chess::Move() && !in_check) {
+        // Pseudo-TT injection (cached one-pass eval replaces rootAdvice)
         if (g_policy.loaded && depth >= 8 && ply_from_root <= 3) {
-            PolicyNodeEval* pe = getOrComputeNodePolicy(board, hash);
+            pe = getOrComputeNodePolicy(board, hash);
             if (pe && pe->top_any != chess::Move()) {
                 tt_move = pe->top_any;
             } else {
@@ -423,6 +424,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         } else {
             depth--;
         }
+    }
+
+    // Wider gate: compute policy for pruning/LMR protection only (no TT injection).
+    // Cache hit if pseudo-TT already computed it above.
+    if (!pe && g_policy.loaded && !is_pv_node && !in_check &&
+        !in_singular_search && !had_real_tt &&
+        depth >= 5 && ply_from_root <= 5) {
+        pe = getOrComputeNodePolicy(board, hash);
     }
 
     int raw_static_eval = 0;
@@ -579,23 +588,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
-
-    // === STEP 0 === pass hash + policy gate to the picker
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    mpCtx.hash = hash;
-
-    // Internal policy ordering: deep, near-root, no check, no singular, and no
-    // REAL TT move (a policy-injected tt_move still allows ordering the rest,
-    // and that eval is already cached from the pseudo-TT block above).
-    const bool use_node_policy =
-        g_policy.loaded &&
-        !in_check &&
-        !in_singular_search &&
-        !had_real_tt &&
-        depth >= 7 &&
-        ply_from_root <= 5;
-
-    MovePicker mp(board, mpCtx, depth, false, use_node_policy);
+    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -619,6 +613,19 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         had_non_excluded_move = true;
         bool is_noisy = !is_quiet;
 
+        int  policy_rank      = -1;
+        bool policy_protected = false;
+        if (is_quiet && !pe && g_policy.loaded && !is_pv_node && !in_check &&
+            !in_singular_search && !had_real_tt &&
+            depth >= 5 && ply_from_root <= 5) {
+            pe = getOrComputeNodePolicy(board, hash);
+        }
+        if (pe && pe->valid && is_quiet && pe->quiet_sharpness > 0.25f) {
+            policy_rank = pe->quietRankOf(move);
+            if (policy_rank >= 0 && policy_rank <= 2)
+                policy_protected = true;
+        }
+
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
             continue;
@@ -626,14 +633,16 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2) {
+            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2 &&
+            !policy_protected) {
             if (!chess::see::see_ge(board, move, -50 * depth)) {
                 continue;
             }
         }
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
-            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
+            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100 &&
+            !policy_protected) {
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
             if (hist_score < -2000 * depth) continue;
@@ -642,7 +651,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             move_count >= 3 + depth * depth) {
-            break;
+            if (!policy_protected) break;
         }
 
         int se_ext = 0;
@@ -669,7 +678,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            std::abs(alpha) < MATE_SCORE - 100) {
+            std::abs(alpha) < MATE_SCORE - 100 && !policy_protected) {
             int futility_margin = 100 + 80 * depth;
             if (static_eval + futility_margin <= alpha) {
                 board.unmakeMove(move);
@@ -698,6 +707,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            // Policy LMR: allocate depth by net's quiet confidence
+            if (policy_rank >= 0 && pe->quiet_sharpness > 0.25f) {
+                if (policy_rank <= 1)      reduction -= 1;
+                else if (policy_rank > 8)  reduction += 1;
+            }
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
@@ -861,7 +876,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         return moves[0];
     }
 
-    // === STEP 0 === per-thread cache reset for a fresh root position (optional hygiene)
     clearPolicyCache();
 
     if (g_butterflyHistory.should_age()) {
@@ -1080,9 +1094,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                                       thread, &tm, stats, true, move, ss);
 
                     if (reduction > 0) {
-                        bool policy_protected =
+                        bool policy_protected_root =
                             rootPolicy.ok && rootPolicy.protected_quiet(move);
-                        int verify_margin = policy_protected ? 20 : 0;
+                        int verify_margin = policy_protected_root ? 20 : 0;
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
                                               thread, &tm, stats, true, move, ss);
