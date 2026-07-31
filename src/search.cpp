@@ -572,6 +572,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    if (is_pv_node && tt_move == chess::Move() && !in_check &&
+        !in_singular_search && g_policy.loaded && depth >= 6 && ply_from_root <= 4) {
+        chess::Move pol_mv;
+        float pol_p = 0.0f;
+        if (g_policy.rootAdvice(board, pol_mv, pol_p) && pol_mv != chess::Move()) {
+            tt_move = pol_mv;
+        }
+    }
+
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
