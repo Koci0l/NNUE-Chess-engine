@@ -607,13 +607,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         had_non_excluded_move = true;
         bool is_noisy = !is_quiet;
 
-        // === Lazy policy: compute ONLY when first quiet is reached ===
-        // Nodes that cut off on TT/capture/killer/counter never pay.
         int  policy_rank      = -1;
         bool policy_protected = false;
-        if (is_quiet && !pe && g_policy.loaded && !is_pv_node && !in_check &&
+        if (is_quiet && !pe &&
+            move != tt_move &&
+            !g_killerMoves.is_killer(ply_from_root, move) &&
+            move != counter_move &&
+            g_policy.loaded && !is_pv_node && !in_check &&
             !in_singular_search && !had_real_tt &&
-            depth >= 5 && ply_from_root <= 5) {
+            depth >= 7 && ply_from_root <= 4) {
             pe = getOrComputeNodePolicy(board, hash);
         }
         if (pe && pe->valid && is_quiet && pe->quiet_sharpness > 0.25f) {
