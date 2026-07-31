@@ -570,8 +570,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         g_policy.loaded &&
         !in_check &&
         !in_singular_search &&
-        depth >= 6 &&
-        (is_pv_node || tt_move == chess::Move() || depth >= 8);
+        depth >= 12 &&
+        !is_pv_node &&
+        tt_move == chess::Move();;
 
     MovePicker mp(board, mpCtx, depth, false, use_policy_here);
 
