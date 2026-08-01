@@ -50,50 +50,22 @@ constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
 // ============================================================================
-// Cached near-root policy advice
+// Root policy tie-break
 // ============================================================================
-struct PolicyCacheEntry {
-    uint64_t key = 0;
-    PolicyAdvice advice;
+constexpr int   POLICY_TIEBREAK_MIN_DEPTH        = 10;
+constexpr int   POLICY_TIEBREAK_MARGIN           = 12;
+constexpr float POLICY_TIEBREAK_MIN_SHARP        = 0.35f;
+constexpr float POLICY_TIEBREAK_MAX_ENTROPY      = 0.75f;
+constexpr int   POLICY_TIEBREAK_MAX_CANDIDATE_RANK = 1;
+constexpr int   POLICY_TIEBREAK_MIN_CURRENT_RANK = 2;
+
+struct RootScoredMove {
+    chess::Move move;
+    int score;
+    bool is_quiet;
+    int search_score;
 };
 
-static constexpr size_t POLICY_CACHE_SIZE = 8192;
-static thread_local PolicyCacheEntry t_policy_cache[POLICY_CACHE_SIZE];
-
-static void clearPolicyCache() {
-    for (size_t i = 0; i < POLICY_CACHE_SIZE; ++i) {
-        t_policy_cache[i].key = 0;
-        t_policy_cache[i].advice.reset();
-    }
-}
-
-static bool getCachedPolicyAdvice(const chess::Board& board, PolicyAdvice& out) {
-    out.reset();
-
-    if (!g_policy.loaded) return false;
-
-    uint64_t key = getZobristHash(board) ^ 0x9e3779b97f4a7c15ULL;
-    auto& e = t_policy_cache[key & (POLICY_CACHE_SIZE - 1)];
-
-    if (e.key == key) {
-        out = e.advice;
-        return out.ok;
-    }
-
-    bool ok = g_policy.nearRootAdvice(board, e.advice);
-    e.key = key;
-
-    if (!ok) {
-        e.advice.reset();
-    }
-
-    out = e.advice;
-    return out.ok;
-}
-
-// ============================================================================
-// Eval helpers
-// ============================================================================
 inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
@@ -510,26 +482,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // ========================================================================
-    // Cached near-root policy advice
-    // ========================================================================
-    PolicyAdvice policy_advice;
-    bool have_policy_advice = false;
-
-    if (g_policy.loaded && !in_check && !in_singular_search &&
-        depth >= POLICY_KILLER_MIN_DEPTH &&
-        ply_from_root <= POLICY_KILLER_MAX_PLY &&
-        (is_pv_node || tt_move == chess::Move())) {
-        have_policy_advice = getCachedPolicyAdvice(board, policy_advice);
-    }
-
     if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
-        if (have_policy_advice && policy_advice.ok &&
-            policy_advice.sharpness >= POLICY_KILLER_MIN_SHARP) {
-            if (policy_advice.count > 0 && policy_advice.quiets[0] != chess::Move()) {
-                tt_move = policy_advice.quiets[0];
-            } else if (policy_advice.top_any != chess::Move()) {
-                tt_move = policy_advice.top_any;
+        // Policy pseudo-TT: use net's top move instead of losing a ply
+        if (g_policy.loaded && depth >= 8 && ply_from_root <= 3) {
+            chess::Move pol_mv;
+            float pol_p = 0.0f;
+
+            if (g_policy.rootAdvice(board, pol_mv, pol_p) && pol_mv != chess::Move()) {
+                tt_move = pol_mv;
             } else {
                 depth--;
             }
@@ -710,24 +670,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-
-    if (have_policy_advice && policy_advice.ok &&
-        policy_advice.sharpness >= POLICY_KILLER_MIN_SHARP) {
-        int max_policy = 1;
-
-        if (policy_advice.sharpness >= 0.50f) {
-            max_policy = 3;
-        } else if (policy_advice.sharpness >= 0.30f) {
-            max_policy = 2;
-        }
-
-        mpCtx.policy_count = std::min(max_policy, policy_advice.count);
-
-        for (int i = 0; i < mpCtx.policy_count; ++i) {
-            mpCtx.policy_quiets[i] = policy_advice.quiets[i];
-        }
-    }
-
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
@@ -754,15 +696,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool is_noisy = !is_quiet;
 
-        int policy_rank = -1;
-        bool policy_protected = false;
-
-        if (have_policy_advice && is_quiet) {
-            policy_rank = policy_advice.rankOf(move);
-            policy_protected =
-                (policy_rank == 0 && policy_advice.sharpness >= POLICY_PROTECT_MIN_SHARP);
-        }
-
         if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 && !chess::see::see_ge(board, move, -50 * depth)) {
             continue;
@@ -770,16 +703,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2 &&
-            !policy_protected) {
+            !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2) {
             if (!chess::see::see_ge(board, move, -50 * depth)) {
                 continue;
             }
         }
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
-            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            !policy_protected) {
+            is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
 
@@ -788,8 +719,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            move_count >= 3 + depth * depth &&
-            !policy_protected) {
+            move_count >= 3 + depth * depth) {
             break;
         }
 
@@ -820,8 +750,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            std::abs(alpha) < MATE_SCORE - 100 &&
-            !policy_protected) {
+            std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = 100 + 80 * depth;
 
             if (static_eval + futility_margin <= alpha) {
@@ -853,13 +782,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
-
-            if (policy_rank == 0 && policy_advice.sharpness >= POLICY_PROTECT_MIN_SHARP) {
-                reduction -= 2;
-            } else if (policy_rank >= 0) {
-                reduction -= 1;
-            }
-
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
@@ -1077,7 +999,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     }
 
     advanceTTGeneration();
-    clearPolicyCache();
 
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
@@ -1095,6 +1016,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         const bool root_lmr_enabled =
             depth >= POLICY_ROOT_LMR_MIN_DEPTH && moves.size() > 1;
 
+        std::vector<RootScoredMove> root_moves;
+
         while (true) {
             if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
                 aspiration_alpha = std::max(-MATE_SCORE, best_score - delta);
@@ -1110,13 +1033,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             score = -MATE_SCORE;
             depth_best_move = best_move;
 
-            struct RootScoredMove {
-                chess::Move move;
-                int score;
-                bool is_quiet;
-            };
-
-            std::vector<RootScoredMove> root_moves;
+            root_moves.clear();
             root_moves.reserve(moves.size());
 
             auto scoreRootMove = [&](const chess::Move& move, bool& is_quiet_out) -> int {
@@ -1216,7 +1133,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             for (const auto& move : moves) {
                 bool q = false;
                 int s = scoreRootMove(move, q);
-                root_moves.push_back({move, s, q});
+                root_moves.push_back({move, s, q, -MATE_SCORE});
             }
 
             std::stable_sort(root_moves.begin(), root_moves.end(),
@@ -1315,6 +1232,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
 
+                root_moves[rmi].search_score = eval;
+
                 if (eval > score) {
                     score = eval;
                     depth_best_move = move;
@@ -1346,6 +1265,81 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         best_score = score;
         best_move = depth_best_move;
+
+        // ====================================================================
+        // Root policy tie-break
+        // ====================================================================
+        if (rootPolicy.ok &&
+            depth >= POLICY_TIEBREAK_MIN_DEPTH &&
+            std::abs(best_score) < 300 &&
+            rootPolicy.quiet_sharpness > POLICY_TIEBREAK_MIN_SHARP &&
+            rootPolicy.norm_entropy_any < POLICY_TIEBREAK_MAX_ENTROPY &&
+            rootPolicy.is_quiet_move(best_move) &&
+            !root_moves.empty()) {
+
+            int best_idx = rootPolicy.find(best_move);
+            int best_rank = (best_idx >= 0) ? rootPolicy.quiet_rank[best_idx] : -1;
+
+            chess::Move policy_choice = best_move;
+            int policy_choice_rank = best_rank;
+            float policy_choice_rel =
+                (best_idx >= 0) ? rootPolicy.rel[best_idx] : POLICY_REL_NONE;
+            int policy_choice_score = best_score;
+
+            for (const auto& rm : root_moves) {
+                if (rm.search_score <= -MATE_SCORE + 1000) continue;
+                if (rm.search_score < best_score - POLICY_TIEBREAK_MARGIN) continue;
+
+                if (!rootPolicy.is_quiet_move(rm.move)) continue;
+
+                int idx = rootPolicy.find(rm.move);
+                if (idx < 0) continue;
+
+                int r = rootPolicy.quiet_rank[idx];
+                if (r < 0) continue;
+
+                float rel = rootPolicy.rel[idx];
+
+                bool better = false;
+
+                if (r < policy_choice_rank) {
+                    better = true;
+                } else if (r == policy_choice_rank && rel > policy_choice_rel) {
+                    better = true;
+                }
+
+                if (better) {
+                    policy_choice = rm.move;
+                    policy_choice_rank = r;
+                    policy_choice_rel = rel;
+                    policy_choice_score = rm.search_score;
+                }
+            }
+
+            bool current_best_policy_weak =
+                (best_rank < 0 || best_rank >= POLICY_TIEBREAK_MIN_CURRENT_RANK);
+
+            bool candidate_policy_strong =
+                (policy_choice_rank >= 0 &&
+                 policy_choice_rank <= POLICY_TIEBREAK_MAX_CANDIDATE_RANK);
+
+            if (policy_choice != best_move &&
+                candidate_policy_strong &&
+                current_best_policy_weak) {
+                if (!g_silent) {
+                    std::cout << "info string policy_tiebreak"
+                              << " depth " << depth
+                              << " from " << chess::uci::moveToUci(best_move)
+                              << " to " << chess::uci::moveToUci(policy_choice)
+                              << " rank " << policy_choice_rank
+                              << " sharp " << rootPolicy.quiet_sharpness
+                              << " gap " << (best_score - policy_choice_score)
+                              << std::endl;
+                }
+
+                best_move = policy_choice;
+            }
+        }
 
         storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
