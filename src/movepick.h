@@ -51,6 +51,7 @@ public:
 private:
     const chess::Board& m_board;
     MovePickerContext m_ctx;
+
     int m_depth;
     bool m_skip_quiets;
 
@@ -72,6 +73,7 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
+
     chess::Move m_returned[512];
     int m_returned_count = 0;
 
@@ -80,10 +82,13 @@ private:
 
     bool wasReturned(const chess::Move& move) const;
     void markReturned(const chess::Move& move);
+
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
+
     int scoreOneCapture(const chess::Move& move);
     int scoreOneQuiet(const chess::Move& move);
+
     void scoreCaptures();
     void scoreQuiets();
 };
@@ -98,18 +103,22 @@ enum class QMovePickStage {
 class QSearchMovePicker {
 public:
     QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check);
+
     chess::Move next();
     int lastScore() const { return m_last_score; }
 
 private:
     const chess::Board& m_board;
+
     chess::Move m_tt_move;
     bool m_in_check;
+
     QMovePickStage m_stage;
 
     ScoredMove m_moves[256];
     int m_move_count = 0;
     int m_move_idx = 0;
+
     int m_last_score = 0;
 
     chess::Move m_returned[256];
@@ -120,8 +129,10 @@ private:
 
     bool wasReturned(const chess::Move& move) const;
     void markReturned(const chess::Move& move);
+
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
+
     void pickBest(ScoredMove* moves, int start, int end);
     void scoreCaptures();
 };
