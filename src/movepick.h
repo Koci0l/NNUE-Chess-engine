@@ -1,9 +1,12 @@
 #pragma once
 
 #include "chess.hpp"
-#include "types.h"
+#include "types.h"   // ScoredMove, SearchStack, pieceValue, etc.
 
 #include <vector>
+
+// Forward decls only if not already fully defined via types.h
+// SearchStack is defined in types.h
 
 struct MovePickerContext {
     chess::Move tt_move{};
@@ -38,7 +41,7 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
-    // Path A: use_policy ignored, no policy ordering.
+    // Path A: use_policy ignored (no policy ordering)
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 
@@ -50,6 +53,7 @@ private:
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
+
     MovePickStage m_stage;
 
     chess::Move m_killer1{};
@@ -68,7 +72,6 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
-
     chess::Move m_returned[512];
     int m_returned_count = 0;
 
@@ -77,13 +80,10 @@ private:
 
     bool wasReturned(const chess::Move& move) const;
     void markReturned(const chess::Move& move);
-
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
-
     int scoreOneCapture(const chess::Move& move);
     int scoreOneQuiet(const chess::Move& move);
-
     void scoreCaptures();
     void scoreQuiets();
 };
@@ -98,7 +98,6 @@ enum class QMovePickStage {
 class QSearchMovePicker {
 public:
     QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check);
-
     chess::Move next();
     int lastScore() const { return m_last_score; }
 
@@ -111,7 +110,6 @@ private:
     ScoredMove m_moves[256];
     int m_move_count = 0;
     int m_move_idx = 0;
-
     int m_last_score = 0;
 
     chess::Move m_returned[256];
@@ -122,10 +120,8 @@ private:
 
     bool wasReturned(const chess::Move& move) const;
     void markReturned(const chess::Move& move);
-
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
-
     void pickBest(ScoredMove* moves, int start, int end);
     void scoreCaptures();
 };

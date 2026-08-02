@@ -10,7 +10,7 @@
 #include <cmath>
 
 // ============================================================================
-// Policy constants
+// Matches monty/bullet policy trainer (inputs.rs + model.rs)
 // ============================================================================
 
 constexpr int POLICY_PLANE       = 768;
@@ -131,15 +131,15 @@ struct PolicyNetT {
     int from_to   = 0;
     int num_moves = 0;
 
-    // Layer 0: INPUT_SIZE -> HL
+    // Layer 0: INPUT_SIZE -> HL (sparse input)
     std::vector<float> l0w;
     std::vector<float> l0b;
 
-    // Layer 1: HL_PAIR -> HL
+    // Layer 1: HL_PAIR -> HL (dense input, middle)
     std::vector<float> l1w;
     std::vector<float> l1b;
 
-    // Layer 2: HL_PAIR -> num_moves
+    // Layer 2: HL_PAIR -> num_moves (dense input, output)
     std::vector<float> l2w;
     std::vector<float> l2b;
 
@@ -206,7 +206,10 @@ inline bool policyQuietLocal(const chess::Board& board, const chess::Move& m) {
     return true;
 }
 
-inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
+template <int HL>
+inline bool computeRootPolicyForNet(const PolicyNetT<HL>& net,
+                                    const chess::Board& board,
+                                    RootPolicy& rp) {
     rp.ok = false;
     rp.nlegal = 0;
     rp.nq = 0;
@@ -230,7 +233,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
         rp.quiet_rank[i] = -1;
     }
 
-    if (!g_policy.loaded) {
+    if (!net.loaded) {
         return false;
     }
 
@@ -243,7 +246,7 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
 
     float logits[256];
 
-    if (!g_policy.logitsLegalMoves(board, rp.legals, logits)) {
+    if (!net.logitsLegalMoves(board, rp.legals, logits)) {
         return false;
     }
 
@@ -372,4 +375,12 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
 
     rp.ok = true;
     return true;
+}
+
+inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
+    return computeRootPolicyForNet(g_policy, board, rp);
+}
+
+inline bool computeSmallRootPolicy(const chess::Board& board, RootPolicy& rp) {
+    return computeRootPolicyForNet(g_policy_small, board, rp);
 }

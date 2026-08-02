@@ -65,7 +65,7 @@ static uint64_t bswap64_local(uint64_t x) {
 }
 
 // ============================================================================
-// Destination tables
+// Destination tables (must match inputs.rs)
 // ============================================================================
 
 static constexpr uint64_t FILE_A = 0x0101010101010101ULL;
@@ -529,7 +529,7 @@ static inline float hsum256(__m256 v) {
 #endif // POLICY_HAS_AVX2
 
 // ============================================================================
-// Hidden
+// Hidden (2-layer: l0 -> crelu -> pm -> l1 -> crelu -> pm)
 // ============================================================================
 
 template <int HL>
@@ -539,7 +539,7 @@ static void computeHidden(const PolicyNetT<HL>& net,
                           float* h_out) {
     constexpr int HP = PolicyNetT<HL>::HL_PAIR;
 
-    // Layer 0: sparse gather -> HL
+    // --- Layer 0: sparse gather -> HL ---
     float h0[HL];
 
     std::memcpy(h0, net.l0b.data(), sizeof(float) * HL);
@@ -599,7 +599,7 @@ static void computeHidden(const PolicyNetT<HL>& net,
     }
 #endif
 
-    // Layer 1: dense matmul HL_PAIR -> HL
+    // --- Layer 1: dense matmul HL_PAIR -> HL ---
     float h2[HL];
 
     std::memcpy(h2, net.l1b.data(), sizeof(float) * HL);
@@ -660,7 +660,7 @@ static void computeHidden(const PolicyNetT<HL>& net,
 }
 
 // ============================================================================
-// Output logit
+// Output logit (layer 2)
 // ============================================================================
 
 template <int HL>
