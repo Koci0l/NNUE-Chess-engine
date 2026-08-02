@@ -654,7 +654,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     // ========================================================================
     NodePolicyInfo smallNodePolicy;
 
-    if (g_policy_small.loaded &&
+    if (false &&
+        g_policy_small.loaded &&
         !in_singular_search &&
         !in_check &&
         is_pv_node &&
