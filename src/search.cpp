@@ -56,6 +56,8 @@ inline int scaleNNUE(int raw_score) {
 // ============================================================================
 
 static inline uint64_t getPawnKey(const chess::Board& board) {
+    // Fast hash of pawn positions.  In production, maintain incrementally
+    // via zobrist pawn keys (XOR in/out on make/unmake).
     uint64_t wp = board.pieces(chess::PieceType::PAWN, chess::Color::WHITE).getBits();
     uint64_t bp = board.pieces(chess::PieceType::PAWN, chess::Color::BLACK).getBits();
     uint64_t h = wp * 0x9E3779B97F4A7C15ULL;
@@ -606,19 +608,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
-    // ── In-tree policy (small net, 64-HL) ─────────────────────────────
-    NodePolicy node_policy;
-    const bool use_node_policy =
-        g_policy_small.loaded &&
-        depth >= POLICY_MIN_DEPTH &&
-        !in_check &&
-        !is_pv_node &&
-        !in_singular_search;
-
-    if (use_node_policy) {
-        computeNodePolicy(board, node_policy);
-    }
-
     // FIX-5: Precompute check squares
     CheckSquares check_sq;
     if (!in_check) {
@@ -629,8 +618,28 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss,
-                            node_policy.valid ? &node_policy : nullptr);
+                            nullptr);  // policy injected below after legal gen
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
+
+    // ── In-tree policy (small net, ordering only) ─────────────────────
+    // Generate legal moves once via the MovePicker, then compute policy
+    // from that same list.  No second legalmoves() call.
+    // scoreQuiets() is called lazily inside next() when reaching the
+    // QUIETS stage, so it will see the policy pointer we set here.
+    NodePolicy node_policy;
+    const bool want_node_policy =
+        g_policy_small.loaded &&
+        depth >= POLICY_MIN_DEPTH &&
+        !in_check &&
+        !is_pv_node &&
+        !in_singular_search;
+
+    if (want_node_policy) {
+        mp.ensureLegalPublic();
+        computeNodePolicy(board, mp.legalMoves(), node_policy);
+        if (node_policy.valid)
+            mp.setNodePolicy(&node_policy);
+    }
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;
@@ -751,17 +760,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            // ── Policy-driven LMR (in-tree) ───────────────────────────
-            if (node_policy.valid) {
-                int pidx = node_policy.find(move);
-                if (pidx >= 0 && node_policy.quiet_rank[pidx] >= 0) {
-                    float rel   = node_policy.rel[pidx];
-                    float sharp = node_policy.sharpness;
-                    float adj   = -0.85f * rel * sharp;
-                    adj = std::clamp(adj, -2.0f, 2.0f);
-                    reduction += static_cast<int>(std::lround(adj));
-                }
-            }
+            // No policy LMR — ordering only.  Add LMR back as a separate
+            // test once ordering passes, with coefficient ~0.3.
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 

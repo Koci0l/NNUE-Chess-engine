@@ -51,6 +51,15 @@ public:
         }
     }
 
+    // Public accessors so search can generate moves once and share the
+    // list with computeNodePolicy (avoids double legalmoves() call).
+    void ensureLegalPublic() { ensureLegal(); }
+    const chess::Movelist& legalMoves() const { return m_all_legal; }
+
+    // Inject a pre-computed node policy after construction.
+    // Must be called before the first next() that reaches QUIETS stage.
+    void setNodePolicy(const NodePolicy* np) { m_ctx.node_policy = np; }
+
 private:
     const chess::Board& m_board;
     MovePickerContext m_ctx;

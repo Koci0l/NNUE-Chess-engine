@@ -29,8 +29,14 @@ constexpr int POLICY_SEE_TH      = -108;
 
 constexpr int POLICY_ROOT_LMR_MIN_DEPTH = 3;
 constexpr int POLICY_ROOT_LMR_TOP       = 3;
-constexpr int POLICY_QUIET_WEIGHT  = 1024;
-constexpr int POLICY_MIN_DEPTH     = 6;
+
+// Tuned down from 1024: the small net is 42.5% top-1, so history must
+// still dominate.  384 gives the policy a gentle nudge, not an override.
+constexpr int POLICY_QUIET_WEIGHT  = 384;
+
+// Raised from 6: at depth 6 history is already warm; the policy adds
+// more value on bigger subtrees where cold-history errors compound.
+constexpr int POLICY_MIN_DEPTH     = 8;
 
 // ============================================================================
 // Policy-disagreement time management
@@ -330,7 +336,8 @@ inline bool computeSmallRootPolicy(const chess::Board& board, RootPolicy& rp) {
 
 // ============================================================================
 // In-tree node policy (small net only, computed per node)
-// Cost: ~5k MACs (cheaper than one NNUE eval). Gate externally by depth.
+// Accepts an already-generated move list to avoid double generation.
+// Cost: ~5k MACs (cheaper than one NNUE eval).  Gate externally by depth.
 // ============================================================================
 
 struct NodePolicy {
@@ -349,7 +356,9 @@ struct NodePolicy {
     }
 };
 
-inline bool computeNodePolicy(const chess::Board& board, NodePolicy& np) {
+inline bool computeNodePolicy(const chess::Board& board,
+                              const chess::Movelist& ml,
+                              NodePolicy& np) {
     np.valid = false;
     np.nlegal = 0;
     np.nq = 0;
@@ -357,8 +366,6 @@ inline bool computeNodePolicy(const chess::Board& board, NodePolicy& np) {
 
     if (!g_policy_small.loaded) return false;
 
-    chess::Movelist ml;
-    chess::movegen::legalmoves(ml, board);
     np.nlegal = static_cast<int>(ml.size());
     if (np.nlegal < 2 || np.nlegal > 64) return false;
 
@@ -408,7 +415,9 @@ inline bool computeNodePolicy(const chess::Board& board, NodePolicy& np) {
     double qent = 0.0;
     for (int j = 0; j < nq; ++j)
         if (qp[j] > 1e-12f) qent -= double(qp[j]) * std::log(double(qp[j]));
-    float norm_ent = (nq > 1) ? static_cast<float>(qent / std::log(static_cast<float>(nq))) : 0.0f;
+    float norm_ent = (nq > 1)
+        ? static_cast<float>(qent / std::log(static_cast<float>(nq)))
+        : 0.0f;
     np.sharpness = std::clamp((0.90f - norm_ent) / 0.35f, 0.0f, 1.0f);
 
     np.valid = true;
