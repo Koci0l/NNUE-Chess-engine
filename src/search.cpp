@@ -51,12 +51,13 @@ inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
 
+// ============================================================================
+// FIX-1: Correction history keyed on PAWN KEY, not full Zobrist.
+// ============================================================================
+
 static inline uint64_t getPawnKey(const chess::Board& board) {
-    // Fast hash of pawn positions. In production, maintain this incrementally
-    // via zobrist pawn keys (XOR in/out pawn pieces on make/unmake).
     uint64_t wp = board.pieces(chess::PieceType::PAWN, chess::Color::WHITE).getBits();
     uint64_t bp = board.pieces(chess::PieceType::PAWN, chess::Color::BLACK).getBits();
-    // Mix with splitmix64-style finaliser for good distribution
     uint64_t h = wp * 0x9E3779B97F4A7C15ULL;
     h ^= bp * 0x517CC1B727220A95ULL;
     h ^= h >> 32;
@@ -68,7 +69,6 @@ static inline uint64_t getPawnKey(const chess::Board& board) {
 }
 
 static inline int correctedEval(int raw_eval, chess::Color side, uint64_t pawn_key) {
-    // FIX-1: use pawn_key instead of full hash
     return std::clamp(raw_eval + g_correctionHistory.get(side, pawn_key),
                       -MATE_SCORE + 1, MATE_SCORE - 1);
 }
@@ -79,7 +79,6 @@ static inline void updateCorrection(chess::Color side, uint64_t pawn_key,
     if (std::abs(raw_static_eval) >= MATE_SCORE - 200) return;
     if (std::abs(score) >= MATE_SCORE - 200) return;
     int diff = std::clamp(score - raw_static_eval, -64, 64);
-    // FIX-1: key on pawn_key
     g_correctionHistory.update(side, pawn_key, diff, depth);
 }
 
@@ -355,6 +354,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
     return best_score;
 }
 
+// ============================================================================
+// FIX-5: Precompute check-giving squares for cheap gives_check test.
+// ============================================================================
 struct CheckSquares {
     uint64_t pawn;
     uint64_t knight;
@@ -364,8 +366,6 @@ struct CheckSquares {
 };
 
 static inline CheckSquares computeCheckSquares(const chess::Board& board) {
-    // Squares from which each piece type would give check to the enemy king.
-    // We compute attacks FROM the enemy king's square (reversed perspective).
     chess::Color enemy = ~board.sideToMove();
     chess::Square ek = board.kingSq(enemy);
     uint64_t occ = board.occ().getBits();
@@ -385,12 +385,12 @@ static inline bool moveGivesCheck(const chess::Board& board, const chess::Move& 
     uint64_t to_bit = 1ULL << move.to().index();
 
     switch (static_cast<int>(moved.type())) {
-        case 0: return (cs.pawn & to_bit) != 0;     // PAWN
-        case 1: return (cs.knight & to_bit) != 0;   // KNIGHT
-        case 2: return (cs.bishop & to_bit) != 0;   // BISHOP
-        case 3: return (cs.rook & to_bit) != 0;     // ROOK
-        case 4: return (cs.queen & to_bit) != 0;    // QUEEN
-        default: return false;                       // KING never "gives check" this way
+        case 0: return (cs.pawn & to_bit) != 0;
+        case 1: return (cs.knight & to_bit) != 0;
+        case 2: return (cs.bishop & to_bit) != 0;
+        case 3: return (cs.rook & to_bit) != 0;
+        case 4: return (cs.queen & to_bit) != 0;
+        default: return false;
     }
 }
 
@@ -448,7 +448,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // IID reduction when no TT move
+    // IID reduction
     if (!in_singular_search && !is_pv_node && depth >= 4 &&
         tt_move == chess::Move() && !in_check) {
         depth--;
@@ -458,6 +458,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int static_eval = 0;
     bool improving = false;
 
+    // FIX-1: pawn key for correction history
     uint64_t pawn_key = getPawnKey(board);
 
     if (!in_check) {
@@ -605,6 +606,20 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
+    // ── In-tree policy (small net, 64-HL) ─────────────────────────────
+    NodePolicy node_policy;
+    const bool use_node_policy =
+        g_policy_small.loaded &&
+        depth >= POLICY_MIN_DEPTH &&
+        !in_check &&
+        !is_pv_node &&
+        !in_singular_search;
+
+    if (use_node_policy) {
+        computeNodePolicy(board, node_policy);
+    }
+
+    // FIX-5: Precompute check squares
     CheckSquares check_sq;
     if (!in_check) {
         check_sq = computeCheckSquares(board);
@@ -613,7 +628,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
-    MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
+    MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss,
+                            node_policy.valid ? &node_policy : nullptr);
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
@@ -658,11 +674,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (hist_score < -2000 * depth) continue;
         }
 
+        // FIX-3: LMP — skip quiets but keep bad captures
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             move_count >= 3 + depth * depth) {
             mp.skipQuiets();
-            continue;  // loop will now yield bad captures (or DONE)
+            continue;
         }
 
         // Singular extension
@@ -679,33 +696,35 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         chess::Piece moved_piece = board.at(move.from());
 
-        bool gives_check = in_check ? false : moveGivesCheck(board, move, check_sq);
-        // For promotions, the promoted piece type matters:
-        if (move.typeOf() == chess::Move::PROMOTION && !in_check) {
-            uint64_t to_bit = 1ULL << move.to().index();
-            switch (static_cast<int>(move.promotionType())) {
-                case 1: gives_check = (check_sq.knight & to_bit) != 0; break;
-                case 2: gives_check = (check_sq.bishop & to_bit) != 0; break;
-                case 3: gives_check = (check_sq.rook   & to_bit) != 0; break;
-                case 4: gives_check = (check_sq.queen  & to_bit) != 0; break;
-                default: break;
+        // FIX-5: Compute gives_check BEFORE makeMove
+        bool gives_check = false;
+        if (!in_check) {
+            gives_check = moveGivesCheck(board, move, check_sq);
+            if (move.typeOf() == chess::Move::PROMOTION) {
+                uint64_t to_bit = 1ULL << move.to().index();
+                switch (static_cast<int>(move.promotionType())) {
+                    case 1: gives_check = (check_sq.knight & to_bit) != 0; break;
+                    case 2: gives_check = (check_sq.bishop & to_bit) != 0; break;
+                    case 3: gives_check = (check_sq.rook   & to_bit) != 0; break;
+                    case 4: gives_check = (check_sq.queen  & to_bit) != 0; break;
+                    default: break;
+                }
             }
         }
 
+        // FIX-5: Futility pruning BEFORE makeMove
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = 100 + 80 * depth;
             if (static_eval + futility_margin <= alpha) {
-                // Pruned — no makeMove, no accumulator update needed.
-                // Still track for history malus:
                 if (quiets_count < MAX_QUIETS_TRACKED)
                     quiets_searched[quiets_count++] = move;
                 continue;
             }
         }
 
-        // Now actually make the move
+        // Make the move
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
         board.makeMove(move);
@@ -731,6 +750,19 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            // ── Policy-driven LMR (in-tree) ───────────────────────────
+            if (node_policy.valid) {
+                int pidx = node_policy.find(move);
+                if (pidx >= 0 && node_policy.quiet_rank[pidx] >= 0) {
+                    float rel   = node_policy.rel[pidx];
+                    float sharp = node_policy.sharpness;
+                    float adj   = -0.85f * rel * sharp;
+                    adj = std::clamp(adj, -2.0f, 2.0f);
+                    reduction += static_cast<int>(std::lround(adj));
+                }
+            }
+
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
@@ -802,9 +834,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
 
             if (!in_singular_search) {
+                // FIX-2: fail-soft
                 storeTT(hash, depth, best_score, best_move, TT_LOWER, ply_from_root);
             }
-            return best_score;
+            return best_score;  // FIX-2: fail-soft
         }
 
         if (eval > alpha) alpha = eval;
@@ -858,6 +891,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
+    // FIX-1: correction history keyed on pawn_key
     bool exact_node = best_score > original_alpha && best_score < beta;
     if (!in_singular_search && !in_check && exact_node &&
         best_move != chess::Move() && isQuietMove(board, best_move)) {
@@ -930,6 +964,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         const bool root_lmr_enabled =
             depth >= POLICY_ROOT_LMR_MIN_DEPTH && moves.size() > 1;
 
+        // FIX-4: track aspiration outcome for correct TT flag
         bool aspiration_failed_low = false;
         bool aspiration_failed_high = false;
 
@@ -1100,6 +1135,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 root_move_count++;
             }
 
+            // FIX-4: track aspiration failures
             if (score <= aspiration_alpha && aspiration_alpha > -MATE_SCORE) {
                 aspiration_failed_low = true;
                 aspiration_failed_high = false;
@@ -1125,6 +1161,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
 
+        // FIX-4: correct TT flag
         {
             TTFlag root_flag;
             if (aspiration_failed_low)

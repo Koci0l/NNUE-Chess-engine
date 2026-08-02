@@ -3,18 +3,23 @@
 #include "types.h"
 #include <vector>
 
+// Forward declare — full definition lives in policy.h
+struct NodePolicy;
+
 struct MovePickerContext {
     chess::Move tt_move{};
     chess::Move counter_move{};
     chess::Color side_to_move{};
     int ply = 0;
     SearchStack* ss = nullptr;
+    const NodePolicy* node_policy = nullptr;   // in-tree policy (nullable)
 
     MovePickerContext() = default;
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
-                      int ply_, SearchStack* ss_)
+                      int ply_, SearchStack* ss_,
+                      const NodePolicy* np = nullptr)
         : tt_move(tt), counter_move(counter), side_to_move(side),
-          ply(ply_), ss(ss_) {}
+          ply(ply_), ss(ss_), node_policy(np) {}
 };
 
 enum class MovePickStage {
@@ -38,8 +43,7 @@ public:
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
 
-    // FIX-3: Allow search to skip remaining quiets without killing bad captures.
-    // Call this instead of `break` when LMP triggers.
+    // Skip remaining quiets without killing bad captures (for LMP).
     void skipQuiets() {
         if (m_stage == MovePickStage::GENERATE_QUIETS ||
             m_stage == MovePickStage::QUIETS) {
@@ -70,8 +74,6 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
-
-    // FIX (Tier 2 speed): removed dead m_returned[512] / wasReturned / markReturned
 
     chess::Movelist m_all_legal;
     bool m_legal_generated = false;
