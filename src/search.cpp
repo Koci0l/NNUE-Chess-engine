@@ -44,19 +44,6 @@ constexpr int SPROBCUT_TT_DEPTH_SUBTRACTOR = 4;
 constexpr int MAX_QUIETS_TRACKED = 64;
 constexpr int MAX_CAPTURES_TRACKED = 32;
 
-// ============================================================================
-// Small-policy internal LMR gates.
-//
-// This is #3 only:
-//   - internal small-policy LMR protection only
-//   - no MovePicker policy ordering
-//   - no policy tail punishment
-//   - no root LMR changes
-// ============================================================================
-constexpr int POLICY_SMALL_LMR_MIN_DEPTH = 4;
-constexpr int POLICY_SMALL_LMR_MAX_DEPTH = 6;
-constexpr int POLICY_SMALL_LMR_MAX_PLY   = 4;
-
 constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
@@ -216,135 +203,6 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
     }
 
     return h;
-}
-
-// ============================================================================
-// Small-policy LMR info.
-//
-// This is local to search.cpp so MovePicker does not need to know about it.
-// It is used only for LMR protection.
-// ============================================================================
-
-struct SmallPolicyLMR {
-    bool ok = false;
-
-    int nlegal = 0;
-    chess::Movelist legals;
-
-    int quiet_rank[256];
-    float sharpness = 0.0f;
-
-    SmallPolicyLMR() {
-        reset();
-    }
-
-    void reset() {
-        ok = false;
-        nlegal = 0;
-        legals.clear();
-        sharpness = 0.0f;
-
-        for (int i = 0; i < 256; ++i) {
-            quiet_rank[i] = -1;
-        }
-    }
-
-    int find(const chess::Move& m) const {
-        for (int i = 0; i < nlegal && i < 256; ++i) {
-            if (legals[i] == m) return i;
-        }
-        return -1;
-    }
-};
-
-static bool computeSmallPolicyLMR(const chess::Board& board, SmallPolicyLMR& sp) {
-    sp.reset();
-
-    if (!g_policy_small.loaded) {
-        return false;
-    }
-
-    chess::movegen::legalmoves(sp.legals, board);
-    sp.nlegal = static_cast<int>(sp.legals.size());
-
-    if (sp.nlegal < 1 || sp.nlegal > 256) {
-        return false;
-    }
-
-    float logits[256];
-
-    if (!g_policy_small.logitsLegalMoves(board, sp.legals, logits)) {
-        return false;
-    }
-
-    int qidx[256];
-    int nq = 0;
-    float max_q = -1e30f;
-
-    for (int i = 0; i < sp.nlegal; ++i) {
-        if (!policyQuietLocal(board, sp.legals[i])) continue;
-
-        qidx[nq++] = i;
-        max_q = std::max(max_q, logits[i]);
-    }
-
-    if (nq <= 0) {
-        sp.ok = true;
-        return true;
-    }
-
-    float sum_q = 0.0f;
-    float qp[256];
-
-    for (int j = 0; j < nq; ++j) {
-        qp[j] = std::exp(logits[qidx[j]] - max_q);
-        sum_q += qp[j];
-    }
-
-    if (sum_q <= 0.0f) sum_q = 1.0f;
-
-    for (int j = 0; j < nq; ++j) {
-        qp[j] /= sum_q;
-    }
-
-    int order[256];
-    for (int j = 0; j < nq; ++j) order[j] = j;
-
-    std::sort(order, order + nq, [&](int a, int b) {
-        return qp[a] > qp[b];
-    });
-
-    for (int r = 0; r < nq; ++r) {
-        const int legal_i = qidx[order[r]];
-        sp.quiet_rank[legal_i] = r;
-    }
-
-    double qent = 0.0;
-
-    for (int j = 0; j < nq; ++j) {
-        if (qp[j] > 1e-12f) {
-            qent -= double(qp[j]) * std::log(double(qp[j]));
-        }
-    }
-
-    float norm_qent = 0.0f;
-
-    if (nq > 1) {
-        norm_qent = static_cast<float>(qent / std::log(static_cast<float>(nq)));
-    }
-
-    float sharpness = std::clamp((0.90f - norm_qent) / 0.35f, 0.0f, 1.0f);
-
-    const float top_quiet_prob = qp[order[0]];
-
-    if (top_quiet_prob < 0.12f) {
-        sharpness *= 0.5f;
-    }
-
-    sp.sharpness = sharpness;
-    sp.ok = true;
-
-    return true;
 }
 
 SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int ply_from_root,
@@ -601,8 +459,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
+    // ========================================================================
     // Internal iterative reduction.
+    //
     // Old big-net pseudo-TT code removed.
+    // No policy is used inside the tree in this version.
+    // ========================================================================
     if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
         depth--;
     }
@@ -778,29 +640,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
-    // ========================================================================
-    // Small-policy LMR info.
-    //
-    // #3 only:
-    //   - compute small policy on selected PV nodes
-    //   - use it only for LMR protection
-    //   - do not pass it to MovePicker
-    // ========================================================================
-    SmallPolicyLMR smallPolicyLMR;
-    bool haveSmallPolicyLMR = false;
-
-    if (g_policy_small.loaded &&
-        !in_singular_search &&
-        !in_check &&
-        is_pv_node &&
-        depth >= POLICY_SMALL_LMR_MIN_DEPTH &&
-        depth <= POLICY_SMALL_LMR_MAX_DEPTH &&
-        ply_from_root <= POLICY_SMALL_LMR_MAX_PLY) {
-        haveSmallPolicyLMR = computeSmallPolicyLMR(board, smallPolicyLMR);
-    }
-
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
 
+    // No policy in MovePicker.
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
@@ -913,32 +755,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 ply_from_root, ss);
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
-
-            // ==================================================================
-            // Small-policy LMR protection only.
-            //
-            // Protect policy top quiets slightly.
-            // No tail punishment here.
-            // ==================================================================
-            if (haveSmallPolicyLMR &&
-                smallPolicyLMR.ok &&
-                is_quiet &&
-                smallPolicyLMR.sharpness > 0.35f) {
-
-                int pidx = smallPolicyLMR.find(move);
-
-                if (pidx >= 0 && smallPolicyLMR.quiet_rank[pidx] >= 0) {
-                    int r = smallPolicyLMR.quiet_rank[pidx];
-                    float sharp = smallPolicyLMR.sharpness;
-
-                    if (r == 0 && sharp > 0.35f) {
-                        reduction = std::max(0, reduction - 1);
-                    } else if (r <= 2 && sharp > 0.45f) {
-                        reduction = std::max(0, reduction - 1);
-                    }
-                }
-            }
-
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
@@ -1342,21 +1158,41 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = lmr_reductions[std::min(depth, 63)]
                                                 [std::min(move_no, 63)];
 
-                        if (rootPolicy.ok) {
+                        // ==================================================
+                        // Improved root policy LMR.
+                        //
+                        // - Protect policy head.
+                        // - Punish confident policy tail.
+                        // - Disable policy adjustments when entropy is high.
+                        // ==================================================
+                        if (rootPolicy.ok &&
+                            rootPolicy.norm_entropy_any < POLICY_TM_ENTROPY_GATE) {
+
                             int idx = rootPolicy.find(move);
 
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
+                                int r = rootPolicy.quiet_rank[idx];
                                 float rel = rootPolicy.rel[idx];
                                 float sharp = rootPolicy.quiet_sharpness;
 
-                                float adj = -0.85f * rel;
+                                if (r == 0 && sharp > 0.25f) {
+                                    reduction = std::max(0, reduction - 2);
+                                } else if (r <= 2 && sharp > 0.35f) {
+                                    reduction = std::max(0, reduction - 1);
+                                } else {
+                                    float adj = -0.85f * rel;
 
-                                if (adj < -2.0f) adj = -2.0f;
-                                if (adj > 3.0f) adj = 3.0f;
+                                    if (adj < -2.0f) adj = -2.0f;
+                                    if (adj > 3.0f) adj = 3.0f;
 
-                                adj *= sharp;
+                                    adj *= sharp;
 
-                                reduction += int(std::lround(adj));
+                                    reduction += int(std::lround(adj));
+                                }
+
+                                if (r >= 8 && rel < -0.5f && sharp > 0.4f) {
+                                    reduction += 1;
+                                }
                             }
                         }
 
@@ -1367,10 +1203,25 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                                       thread, &tm, stats, true, move, ss);
 
                     if (reduction > 0) {
-                        bool policy_protected =
-                            rootPolicy.ok && rootPolicy.protected_quiet(move);
+                        int verify_margin = 0;
 
-                        int verify_margin = policy_protected ? 20 : 0;
+                        if (rootPolicy.ok &&
+                            rootPolicy.norm_entropy_any < POLICY_TM_ENTROPY_GATE) {
+
+                            int idx = rootPolicy.find(move);
+
+                            if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
+                                int r = rootPolicy.quiet_rank[idx];
+
+                                if (r == 0) {
+                                    verify_margin = 30;
+                                } else if (r <= 2) {
+                                    verify_margin = 15;
+                                } else if (rootPolicy.protected_quiet(move)) {
+                                    verify_margin = 10;
+                                }
+                            }
+                        }
 
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
