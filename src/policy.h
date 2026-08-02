@@ -10,7 +10,7 @@
 #include <cmath>
 
 // ============================================================================
-// Matches monty/bullet policy trainer (inputs.rs + model.rs)
+// Policy constants
 // ============================================================================
 
 constexpr int POLICY_PLANE       = 768;
@@ -131,15 +131,15 @@ struct PolicyNetT {
     int from_to   = 0;
     int num_moves = 0;
 
-    // Layer 0: INPUT_SIZE -> HL (sparse input)
+    // Layer 0: INPUT_SIZE -> HL
     std::vector<float> l0w;
     std::vector<float> l0b;
 
-    // Layer 1: HL_PAIR -> HL (dense input, middle)
+    // Layer 1: HL_PAIR -> HL
     std::vector<float> l1w;
     std::vector<float> l1b;
 
-    // Layer 2: HL_PAIR -> num_moves (dense input, output)
+    // Layer 2: HL_PAIR -> num_moves
     std::vector<float> l2w;
     std::vector<float> l2b;
 
@@ -383,4 +383,164 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
 
 inline bool computeSmallRootPolicy(const chess::Board& board, RootPolicy& rp) {
     return computeRootPolicyForNet(g_policy_small, board, rp);
+}
+
+// ============================================================================
+// Internal-node small policy info
+// ============================================================================
+
+struct NodePolicyInfo {
+    bool ok = false;
+
+    int nlegal = 0;
+    chess::Movelist legals;
+
+    float rel[256];
+    int   quiet_rank[256];
+
+    float sharpness = 0.0f;
+
+    NodePolicyInfo() {
+        reset();
+    }
+
+    void reset() {
+        ok = false;
+        nlegal = 0;
+        legals.clear();
+        sharpness = 0.0f;
+
+        for (int i = 0; i < 256; ++i) {
+            rel[i] = POLICY_REL_NONE;
+            quiet_rank[i] = -1;
+        }
+    }
+
+    int find(const chess::Move& m) const {
+        for (int i = 0; i < nlegal && i < 256; ++i) {
+            if (legals[i] == m) return i;
+        }
+        return -1;
+    }
+
+    bool is_quiet_policy_move(const chess::Move& m) const {
+        const int i = find(m);
+        return i >= 0 && quiet_rank[i] >= 0;
+    }
+
+    int quiet_rank_of(const chess::Move& m) const {
+        const int i = find(m);
+        return (i >= 0) ? quiet_rank[i] : -1;
+    }
+
+    float rel_of(const chess::Move& m) const {
+        const int i = find(m);
+        return (i >= 0) ? rel[i] : POLICY_REL_NONE;
+    }
+};
+
+template <int HL>
+inline bool computeNodePolicyForNet(const PolicyNetT<HL>& net,
+                                    const chess::Board& board,
+                                    NodePolicyInfo& np) {
+    np.reset();
+
+    if (!net.loaded) {
+        return false;
+    }
+
+    chess::movegen::legalmoves(np.legals, board);
+    np.nlegal = static_cast<int>(np.legals.size());
+
+    if (np.nlegal < 1 || np.nlegal > 256) {
+        return false;
+    }
+
+    float logits[256];
+
+    if (!net.logitsLegalMoves(board, np.legals, logits)) {
+        return false;
+    }
+
+    // Quiet-only softmax.
+    int qidx[256];
+    int nq = 0;
+    float max_q = -1e30f;
+
+    for (int i = 0; i < np.nlegal; ++i) {
+        if (!policyQuietLocal(board, np.legals[i])) continue;
+
+        qidx[nq++] = i;
+        max_q = std::max(max_q, logits[i]);
+    }
+
+    if (nq <= 0) {
+        np.ok = true;
+        return true;
+    }
+
+    float sum_q = 0.0f;
+    float qp[256];
+
+    for (int j = 0; j < nq; ++j) {
+        qp[j] = std::exp(logits[qidx[j]] - max_q);
+        sum_q += qp[j];
+    }
+
+    if (sum_q <= 0.0f) sum_q = 1.0f;
+
+    for (int j = 0; j < nq; ++j) {
+        qp[j] /= sum_q;
+
+        const int legal_i = qidx[j];
+
+        np.rel[legal_i] =
+            std::log(std::max(qp[j], 1e-9f) * static_cast<float>(nq));
+    }
+
+    int order[256];
+    for (int j = 0; j < nq; ++j) order[j] = j;
+
+    std::sort(order, order + nq, [&](int a, int b) {
+        return qp[a] > qp[b];
+    });
+
+    for (int r = 0; r < nq; ++r) {
+        const int legal_i = qidx[order[r]];
+        np.quiet_rank[legal_i] = r;
+    }
+
+    double qent = 0.0;
+
+    for (int j = 0; j < nq; ++j) {
+        if (qp[j] > 1e-12f) {
+            qent -= double(qp[j]) * std::log(double(qp[j]));
+        }
+    }
+
+    float norm_qent = 0.0f;
+
+    if (nq > 1) {
+        norm_qent = static_cast<float>(qent / std::log(static_cast<float>(nq)));
+    }
+
+    float sharpness = std::clamp((0.90f - norm_qent) / 0.35f, 0.0f, 1.0f);
+
+    const int top_legal_i = qidx[order[0]];
+    const float top_quiet_prob = qp[order[0]];
+
+    if (top_quiet_prob < 0.12f) {
+        sharpness *= 0.5f;
+    }
+
+    (void)top_legal_i;
+
+    np.sharpness = sharpness;
+    np.ok = true;
+
+    return true;
+}
+
+inline bool computeSmallNodePolicy(const chess::Board& board, NodePolicyInfo& np) {
+    return computeNodePolicyForNet(g_policy_small, board, np);
 }
