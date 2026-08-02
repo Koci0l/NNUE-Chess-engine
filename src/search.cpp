@@ -44,11 +44,9 @@ constexpr int SPROBCUT_TT_DEPTH_SUBTRACTOR = 4;
 constexpr int MAX_QUIETS_TRACKED = 64;
 constexpr int MAX_CAPTURES_TRACKED = 32;
 
-// Small in-tree policy gates.
-// Version A: PV nodes only, quiet ordering only.
 constexpr int POLICY_SMALL_NODE_MIN_DEPTH = 4;
-constexpr int POLICY_SMALL_NODE_MAX_DEPTH = 8;
-constexpr int POLICY_SMALL_NODE_MAX_PLY   = 8;
+constexpr int POLICY_SMALL_NODE_MAX_DEPTH = 5;
+constexpr int POLICY_SMALL_NODE_MAX_PLY   = 3;
 
 constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
@@ -654,8 +652,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     // ========================================================================
     NodePolicyInfo smallNodePolicy;
 
-    if (false &&
-        g_policy_small.loaded &&
+    if (g_policy_small.loaded &&
         !in_singular_search &&
         !in_check &&
         is_pv_node &&

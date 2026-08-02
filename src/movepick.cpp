@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
-static constexpr int POLICY_SMALL_QUIET_WEIGHT = 700;
+static constexpr int POLICY_SMALL_QUIET_WEIGHT = 120;
 
 // ============================================================================
 // MovePicker
@@ -123,32 +123,41 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
 
     int score = hist + cont1 + cont2;
 
-    // Small-policy quiet ordering bonus.
-    // This does NOT replace history. It only blends a position-specific prior.
+    // Micro small-policy bonus.
+    // This should only act as a soft tie-breaker.
     if (m_ctx.policy != nullptr &&
         m_ctx.policy->ok &&
-        m_ctx.policy->sharpness > 0.05f) {
+        m_ctx.policy->sharpness > 0.35f) {
 
         const int idx = m_ctx.policy->find(move);
 
         if (idx >= 0 && m_ctx.policy->quiet_rank[idx] >= 0) {
             const int r = m_ctx.policy->quiet_rank[idx];
 
-            float rel = m_ctx.policy->rel[idx];
-            float sharp = m_ctx.policy->sharpness;
+            // Only trust the policy head, not the tail.
+            if (r <= 3) {
+                float rel = m_ctx.policy->rel[idx];
+                float sharp = m_ctx.policy->sharpness;
 
-            rel = std::clamp(rel, -2.5f, 2.5f);
+                rel = std::clamp(rel, -1.5f, 1.5f);
 
-            score += int(float(POLICY_SMALL_QUIET_WEIGHT) * rel * sharp);
+                // If history already has a strong opinion, trust history more.
+                int abs_score = score < 0 ? -score : score;
+                float history_conf = 2048.0f / (2048.0f + float(abs_score));
 
-            int rank_bonus = 0;
+                int bonus = int(float(POLICY_SMALL_QUIET_WEIGHT) * rel * sharp * history_conf);
 
-            if (r == 0)       rank_bonus = 4000;
-            else if (r == 1)  rank_bonus = 2500;
-            else if (r <= 2)  rank_bonus = 1500;
-            else if (r <= 5)  rank_bonus = 600;
+                int rank_bonus = 0;
 
-            score += int(float(rank_bonus) * sharp);
+                if (r == 0)       rank_bonus = 400;
+                else if (r == 1)  rank_bonus = 250;
+                else if (r == 2)  rank_bonus = 150;
+                else              rank_bonus = 75;
+
+                bonus += int(float(rank_bonus) * sharp * history_conf);
+
+                score += bonus;
+            }
         }
     }
 
