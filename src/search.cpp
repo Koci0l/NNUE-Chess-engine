@@ -90,8 +90,8 @@ static inline bool extractCaptureInfo(const chess::Board& board,
                                       const chess::Move& move,
                                       CaptureSearchInfo& info) {
     chess::Piece attacker = board.at(move.from());
-    chess::Piece captured;
 
+    chess::Piece captured;
     if (move.typeOf() == chess::Move::ENPASSANT) {
         chess::Square capSq(move.to().file(), move.from().rank());
         captured = board.at(capSq);
@@ -142,7 +142,7 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         accStack.current().move_piece(pawn, move.from(), move.to());
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to();
+        chess::Square rook_from = move.to(); // Disservin: to() is rook square
 
         bool king_side = rook_from > king_from;
         chess::Color c = board.at(king_from).color();
@@ -272,7 +272,6 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
         chess::movegen::legalmoves(legal_moves, board);
 
         bool is_legal = false;
-
         for (const auto& m : legal_moves) {
             if (m == move) {
                 is_legal = true;
@@ -309,6 +308,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
     }
 
     bool in_check = board.inCheck();
+
     uint64_t hash = getZobristHash(board);
 
     TTEntry te;
@@ -459,12 +459,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // ========================================================================
-    // Internal iterative reduction.
-    //
-    // Old big-net pseudo-TT code removed.
-    // No policy is used inside the tree in this version.
-    // ========================================================================
     if (!in_singular_search && !is_pv_node && depth >= 4 && tt_move == chess::Move() && !in_check) {
         depth--;
     }
@@ -642,7 +636,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
 
-    // No policy in MovePicker.
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
 
     chess::Move best_move;
@@ -1086,7 +1079,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                         int rank_bonus = 0;
 
-                        if (r == 0)      rank_bonus = 6000;
+                        if (r == 0) rank_bonus = 6000;
                         else if (r == 1) rank_bonus = 3500;
                         else if (r <= 2) rank_bonus = 2000;
                         else if (r <= 5) rank_bonus = 900;
@@ -1158,41 +1151,21 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = lmr_reductions[std::min(depth, 63)]
                                                 [std::min(move_no, 63)];
 
-                        // ==================================================
-                        // Improved root policy LMR.
-                        //
-                        // - Protect policy head.
-                        // - Punish confident policy tail.
-                        // - Disable policy adjustments when entropy is high.
-                        // ==================================================
-                        if (rootPolicy.ok &&
-                            rootPolicy.norm_entropy_any < POLICY_TM_ENTROPY_GATE) {
-
+                        if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
 
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
-                                int r = rootPolicy.quiet_rank[idx];
                                 float rel = rootPolicy.rel[idx];
                                 float sharp = rootPolicy.quiet_sharpness;
 
-                                if (r == 0 && sharp > 0.25f) {
-                                    reduction = std::max(0, reduction - 2);
-                                } else if (r <= 2 && sharp > 0.35f) {
-                                    reduction = std::max(0, reduction - 1);
-                                } else {
-                                    float adj = -0.85f * rel;
+                                float adj = -0.85f * rel;
 
-                                    if (adj < -2.0f) adj = -2.0f;
-                                    if (adj > 3.0f) adj = 3.0f;
+                                if (adj < -2.0f) adj = -2.0f;
+                                if (adj > 3.0f) adj = 3.0f;
 
-                                    adj *= sharp;
+                                adj *= sharp;
 
-                                    reduction += int(std::lround(adj));
-                                }
-
-                                if (r >= 8 && rel < -0.5f && sharp > 0.4f) {
-                                    reduction += 1;
-                                }
+                                reduction += int(std::lround(adj));
                             }
                         }
 
@@ -1203,25 +1176,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                                       thread, &tm, stats, true, move, ss);
 
                     if (reduction > 0) {
-                        int verify_margin = 0;
+                        bool policy_protected =
+                            rootPolicy.ok && rootPolicy.protected_quiet(move);
 
-                        if (rootPolicy.ok &&
-                            rootPolicy.norm_entropy_any < POLICY_TM_ENTROPY_GATE) {
-
-                            int idx = rootPolicy.find(move);
-
-                            if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
-                                int r = rootPolicy.quiet_rank[idx];
-
-                                if (r == 0) {
-                                    verify_margin = 30;
-                                } else if (r <= 2) {
-                                    verify_margin = 15;
-                                } else if (rootPolicy.protected_quiet(move)) {
-                                    verify_margin = 10;
-                                }
-                            }
-                        }
+                        int verify_margin = policy_protected ? 20 : 0;
 
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
@@ -1302,15 +1260,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             score_str = "cp " + std::to_string(best_score);
         }
 
-        if (!g_silent) {
+        if (!g_silent)
             std::cout
                 << "info score " << score_str
                 << " depth " << depth
                 << " nodes " << stats.nodes
-                << " nps " << nps
-                << " time " << elapsed
-                << " pv " << pv_str << "\n";
-        }
+                << " nps " << nps << " time "
+                << elapsed << " pv " << pv_str << "\n";
 
         tm.update_stability(best_move);
 
@@ -1318,7 +1274,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             depth >= POLICY_TM_MIN_DEPTH &&
             node_limit <= 0 &&
             tm.soft_limit_ms < tm.hard_limit_ms) {
-
             chess::Move pol_top = rootPolicy.top_any;
             float pol_p = rootPolicy.top_prob_any;
             float pol_ent = rootPolicy.entropy_any;
@@ -1333,16 +1288,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (pol_p < POLICY_TM_UNCERTAIN) {
                     scale = 1.50;
                 }
-            } else if (pol_p >= 0.50f && rootPolicy.norm_entropy_any < 0.55f) {
-                scale = 0.45;
             } else if (pol_p >= POLICY_TM_AGREE_CONF) {
                 scale = POLICY_TM_AGREE_S;
             } else if (pol_p < POLICY_TM_UNCERTAIN) {
                 scale = POLICY_TM_UNCERTAIN_S;
-            }
-
-            if (rootPolicy.norm_entropy_any > POLICY_TM_ENTROPY_GATE) {
-                scale = 1.0;
             }
 
             tm.set_policy_time_scale(scale);
