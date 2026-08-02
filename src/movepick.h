@@ -5,16 +5,12 @@
 
 #include <vector>
 
-struct NodePolicyInfo;
-
 struct MovePickerContext {
     chess::Move tt_move{};
     chess::Move counter_move{};
     chess::Color side_to_move{};
     int ply = 0;
     SearchStack* ss = nullptr;
-
-    const NodePolicyInfo* policy = nullptr;
 
     MovePickerContext() = default;
 
@@ -24,8 +20,7 @@ struct MovePickerContext {
           counter_move(counter),
           side_to_move(side),
           ply(ply_),
-          ss(ss_),
-          policy(nullptr) {}
+          ss(ss_) {}
 };
 
 enum class MovePickStage {
@@ -43,6 +38,7 @@ enum class MovePickStage {
 
 class MovePicker {
 public:
+    // Path A: use_policy ignored, no policy ordering.
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
                int depth, bool skip_quiets, bool use_policy_unused = false);
 
