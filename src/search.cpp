@@ -717,7 +717,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
-        bool can_reduce = !in_check && is_quiet && move_count > 1 &&
+                bool can_reduce = !in_check && move_count > 1 &&
                           depth >= 3 && !gives_check && !in_singular_search &&
                           new_depth > 1;
 
@@ -728,9 +728,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (!is_pv_node) reduction += 1;
             if (!improving) reduction += 1;
 
+            if (!is_quiet) reduction = std::max(0, reduction - 2);
+
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
