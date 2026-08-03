@@ -6,6 +6,7 @@
 #include "nnue.h"
 #include "policy.h"
 #include "policy_diag.h"
+#include "spsa.h"
 
 #include <iostream>
 #include <sstream>
@@ -15,6 +16,7 @@
 #include <cctype>
 #include <algorithm>
 #include <fstream>
+#include <cmath>
 
 #ifndef __has_include
 #define __has_include(x) 0
@@ -71,6 +73,61 @@ static const char* BENCH_FENS[] = {
     "6k1/6p1/6Pp/ppp5/3pn2P/1P3K2/1PP2P2/3N4 b - - 0 1",
 };
 
+// ============================================================================
+// SPSA setoption handler
+// ============================================================================
+
+static bool trySetSPSA(const std::string& name, const std::string& val) {
+    try {
+        auto asInt    = [&]() { return static_cast<int>(std::lround(std::stod(val))); };
+        auto asDouble = [&]() { return std::stod(val); };
+        auto asFloat  = [&]() { return static_cast<float>(std::stod(val)); };
+
+        // Tier 1
+        if (name == "lmr_base")            { spsa_lmr_base            = asDouble(); initLMR(); return true; }
+        if (name == "lmr_divisor")         { spsa_lmr_divisor         = asDouble(); initLMR(); return true; }
+        if (name == "nmp_base")            { spsa_nmp_base            = asInt(); return true; }
+        if (name == "nmp_divisor")         { spsa_nmp_divisor         = asInt(); return true; }
+        if (name == "rfp_improving")       { spsa_rfp_improving       = asInt(); return true; }
+        if (name == "rfp_no_improving")    { spsa_rfp_no_improving    = asInt(); return true; }
+        if (name == "rfp_max_depth")       { spsa_rfp_max_depth       = asInt(); return true; }
+        if (name == "futility_base")       { spsa_futility_base       = asInt(); return true; }
+        if (name == "futility_per_depth")  { spsa_futility_per_depth  = asInt(); return true; }
+        if (name == "see_noisy")           { spsa_see_noisy           = asInt(); return true; }
+        if (name == "see_quiet")           { spsa_see_quiet           = asInt(); return true; }
+        if (name == "asp_delta")           { spsa_asp_delta           = asInt(); return true; }
+
+        // Tier 2
+        if (name == "razor_d1")            { spsa_razor_d1            = asInt(); return true; }
+        if (name == "razor_d2")            { spsa_razor_d2            = asInt(); return true; }
+        if (name == "razor_d3")            { spsa_razor_d3            = asInt(); return true; }
+        if (name == "hist_prune")          { spsa_hist_prune          = asInt(); return true; }
+        if (name == "lmp_base")            { spsa_lmp_base            = asInt(); return true; }
+        if (name == "lmp_depth_coeff")     { spsa_lmp_depth_coeff     = asDouble(); return true; }
+        if (name == "se_margin")           { spsa_se_margin           = asInt(); return true; }
+        if (name == "se_double_bias")      { spsa_se_double_bias      = asInt(); return true; }
+        if (name == "se_triple_bias")      { spsa_se_triple_bias      = asInt(); return true; }
+        if (name == "probcut_beta_margin") { spsa_probcut_beta_margin = asInt(); return true; }
+        if (name == "probcut_see_thresh")  { spsa_probcut_see_thresh  = asInt(); return true; }
+        if (name == "sprobcut_beta_margin"){ spsa_sprobcut_beta_margin= asInt(); return true; }
+        if (name == "lmr_hist_divisor")    { spsa_lmr_hist_divisor    = asInt(); return true; }
+        if (name == "hist_bonus")          { spsa_hist_bonus          = asInt(); return true; }
+        if (name == "pv_hist_bonus")       { spsa_pv_hist_bonus       = asInt(); return true; }
+
+        // Tier 3
+        if (name == "policy_bonus_scale")  { spsa_policy_bonus_scale  = asInt(); return true; }
+        if (name == "policy_rank_scale")   { spsa_policy_rank_scale   = asDouble(); return true; }
+        if (name == "policy_tm_disagree")  { spsa_policy_tm_disagree  = asDouble(); return true; }
+        if (name == "policy_tm_agree")     { spsa_policy_tm_agree     = asDouble(); return true; }
+        if (name == "policy_sharp_thresh") { spsa_policy_sharp_thresh = asFloat(); return true; }
+    } catch (...) {}
+    return false;
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
 static std::vector<std::string> split(const std::string& s, char delimiter) {
     std::vector<std::string> tokens;
     std::string token;
@@ -83,6 +140,25 @@ static std::vector<std::string> split(const std::string& s, char delimiter) {
 
     return tokens;
 }
+
+static bool is_integer(const std::string& s) {
+    if (s.empty()) return false;
+
+    size_t i = 0;
+
+    if (s[0] == '-' || s[0] == '+') i = 1;
+    if (i >= s.size()) return false;
+
+    for (; i < s.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Bench
+// ============================================================================
 
 static void run_bench(ThreadInfo& thread) {
     chess::Board bench_board;
@@ -140,20 +216,9 @@ static void run_bench(ThreadInfo& thread) {
     std::cout.flush();
 }
 
-static bool is_integer(const std::string& s) {
-    if (s.empty()) return false;
-
-    size_t i = 0;
-
-    if (s[0] == '-' || s[0] == '+') i = 1;
-    if (i >= s.size()) return false;
-
-    for (; i < s.size(); ++i) {
-        if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
-    }
-
-    return true;
-}
+// ============================================================================
+// Command processor
+// ============================================================================
 
 static bool process_command(const std::string& line, chess::Board& board, ThreadInfo& thread) {
     auto tokens = split(line, ' ');
@@ -176,6 +241,14 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout.flush();
 
     } else if (command == "setoption") {
+        // --- SPSA params (try first) ---
+        if (tokens.size() >= 5 && tokens[1] == "name" && tokens[3] == "value") {
+            if (trySetSPSA(tokens[2], tokens[4])) {
+                return true;
+            }
+        }
+
+        // --- Standard options ---
         if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "Hash" && tokens[3] == "value") {
             int mb = std::stoi(tokens[4]);
             initTT(mb);
@@ -309,6 +382,9 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
     } else if (command == "quit") {
         return false;
 
+    } else if (command == "spsa") {
+        printSPSA();
+
     } else if (command == "eval") {
         int val = g_nnue.evaluate(board, thread);
         std::cout << "NNUE static eval: " << val << std::endl;
@@ -317,10 +393,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         int topN = 16;
 
         if (tokens.size() >= 2) {
-            try {
-                topN = std::stoi(tokens[1]);
-            } catch (...) {
-            }
+            try { topN = std::stoi(tokens[1]); } catch (...) {}
         }
 
         g_policy.debugPosition(board, topN);
@@ -329,10 +402,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         int topN = 16;
 
         if (tokens.size() >= 2) {
-            try {
-                topN = std::stoi(tokens[1]);
-            } catch (...) {
-            }
+            try { topN = std::stoi(tokens[1]); } catch (...) {}
         }
 
         g_policy_small.debugPosition(board, topN);
@@ -405,6 +475,10 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
     return true;
 }
+
+// ============================================================================
+// Main UCI loop
+// ============================================================================
 
 void uci_loop(int argc, char* argv[]) {
     chess::Board board;

@@ -2,6 +2,8 @@
 
 #include "chess.hpp"
 
+#include "spsa.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -101,7 +103,8 @@ struct RootPolicy {
 
     bool protected_quiet(const chess::Move& m) const {
         if (!ok) return false;
-        if (quiet_sharpness < 0.25f) return false;
+        
+        if (quiet_sharpness < spsa_policy_sharp_thresh) return false;
 
         const int i = find(m);
         if (i < 0) return false;
