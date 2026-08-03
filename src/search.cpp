@@ -297,9 +297,11 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
     int original_alpha = alpha;
     int best_score;
+    int stand_pat = 0;
 
     if (!in_check) {
-        best_score = scaleNNUE(g_nnue.evaluate(board, thread));
+        stand_pat = scaleNNUE(g_nnue.evaluate(board, thread));
+        best_score = stand_pat;
         if (best_score >= beta) {
             storeTT(hash, 0, best_score, chess::Move(), TT_LOWER, ply_from_root);
             return best_score;
@@ -312,18 +314,45 @@ int quiescence(chess::Board& board, int alpha, int beta,
     QSearchMovePicker mp(board, tt_move, in_check);
     chess::Move best_move;
     bool searched_any = false;
+    int move_count = 0;
+
+    // Move count limits: tighter when not in check (captures are few),
+    // looser in check (evasions can be numerous but most are bad).
+    constexpr int QSEARCH_MAX_MOVES_NOT_IN_CHECK = 12;
+    constexpr int QSEARCH_MAX_MOVES_IN_CHECK     = 16;
 
     while (true) {
         chess::Move move = mp.next();
         if (move == chess::Move()) break;
         searched_any = true;
+        move_count++;
 
         bool is_tactical = board.at(move.to()) != chess::Piece::NONE ||
                            move.typeOf() == chess::Move::PROMOTION ||
                            move.typeOf() == chess::Move::ENPASSANT;
 
+        // SEE pruning
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
             continue;
+
+        // ── Delta pruning ─────────────────────────────────────────────
+        if (!in_check && is_tactical) {
+            int victim_value = 0;
+            if (move.typeOf() == chess::Move::ENPASSANT) {
+                victim_value = pieceValue(chess::PieceType::PAWN);
+            } else if (board.at(move.to()) != chess::Piece::NONE) {
+                victim_value = pieceValue(board.at(move.to()).type());
+            }
+            // Promotion adds the promoted piece value
+            if (move.typeOf() == chess::Move::PROMOTION) {
+                victim_value += pieceValue(move.promotionType()) - pieceValue(chess::PieceType::PAWN);
+            }
+
+            constexpr int DELTA_MARGIN = 150;
+            if (stand_pat + victim_value + DELTA_MARGIN < alpha) {
+                continue;
+            }
+        }
 
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
