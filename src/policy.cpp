@@ -1161,29 +1161,21 @@ bool computeSmallPolicyViewForNet(const PolicyNetT<HL>& net,
         max_q = std::max(max_q, logits[j]);
     }
 
-    float qp[256];
-    float sum = 0.0f;
-
+    // ------------------------------------------------------------------
+    // FAST PATH: No std::exp, no std::log!
+    // Raw logits are perfectly fine for ranking and relative scoring.
+    // ------------------------------------------------------------------
     for (int j = 0; j < nq; ++j) {
-        qp[j] = std::exp(logits[j] - max_q);
-        sum += qp[j];
-    }
-
-    if (sum <= 0.0f) sum = 1.0f;
-
-    for (int j = 0; j < nq; ++j) {
-        qp[j] /= sum;
-
         const int legal_i = qidx[j];
-        out.rel[legal_i] =
-            std::log(std::max(qp[j], 1e-9f) * static_cast<float>(nq));
+        // rel is now (logit - max_logit), which is <= 0.0f
+        out.rel[legal_i] = logits[j] - max_q;
     }
 
     int order[256];
     for (int j = 0; j < nq; ++j) order[j] = j;
 
     std::sort(order, order + nq, [&](int a, int b) {
-        return qp[a] > qp[b];
+        return logits[a] > logits[b];
     });
 
     for (int r = 0; r < nq; ++r) {
@@ -1191,23 +1183,30 @@ bool computeSmallPolicyViewForNet(const PolicyNetT<HL>& net,
         out.rank[legal_i] = r;
     }
 
-    double qent = 0.0;
+    // Approximate sharpness using standard deviation of logits.
+    // This avoids the expensive entropy calculation.
+    float sum_logit = 0.0f;
+    for (int j = 0; j < nq; ++j) sum_logit += logits[j];
+    float mean_logit = sum_logit / static_cast<float>(nq);
+    
+    float var = 0.0f;
     for (int j = 0; j < nq; ++j) {
-        if (qp[j] > 1e-12f) {
-            qent -= double(qp[j]) * std::log(double(qp[j]));
-        }
+        float diff = logits[j] - mean_logit;
+        var += diff * diff;
     }
-
-    float norm_qent = 0.0f;
+    var /= static_cast<float>(nq);
+    
+    float std_dev = std::sqrt(var);
+    
+    // A std_dev of ~1.5 to 2.0 in logits is quite sharp.
+    float sharp = std::clamp(std_dev / 2.0f, 0.0f, 1.0f);
+    
+    // Penalize if the top logit is not much better than the second.
     if (nq > 1) {
-        norm_qent = static_cast<float>(qent / std::log(static_cast<float>(nq)));
-    }
-
-    float sharp = std::clamp((0.90f - norm_qent) / 0.35f, 0.0f, 1.0f);
-    const float top_p = qp[order[0]];
-
-    if (top_p < 0.12f) {
-        sharp *= 0.5f;
+        float gap = logits[order[0]] - logits[order[1]];
+        if (gap < 0.5f) {
+            sharp *= 0.5f;
+        }
     }
 
     out.sharp = sharp;

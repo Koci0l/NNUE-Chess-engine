@@ -842,21 +842,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
 
-            // Small-policy LMR adjustment.
-            // Very mild: max +/- 1 reduction, non-TT quiets only.
-            if (use_small_policy && is_quiet && move != tt_move) {
-                const SmallPolicyView& sp = mp.smallPolicyIfReady();
-
-                if (sp.ok && sp.sharp >= POLICY_SMALL_SEARCH_SHARP_MIN) {
-                    const int small_idx = mp.legalIndex(move);
-
-                    if (small_idx >= 0 && small_idx < 256 && sp.rank[small_idx] >= 0) {
-                        float small_adj = -0.20f * sp.rel[small_idx] * sp.sharp;
-                        reduction += std::clamp(static_cast<int>(std::lround(small_adj)), -1, 1);
-                    }
-                }
-            }
-
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
