@@ -237,11 +237,44 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
 
+        // SPSA params — MUST be declared or fastchess will not send them
+        std::cout << "option name lmr_base type string default 0.75" << std::endl;
+        std::cout << "option name lmr_divisor type string default 2.25" << std::endl;
+        std::cout << "option name nmp_base type string default 3" << std::endl;
+        std::cout << "option name nmp_divisor type string default 3" << std::endl;
+        std::cout << "option name rfp_improving type string default 70" << std::endl;
+        std::cout << "option name rfp_no_improving type string default 95" << std::endl;
+        std::cout << "option name rfp_max_depth type string default 7" << std::endl;
+        std::cout << "option name futility_base type string default 100" << std::endl;
+        std::cout << "option name futility_per_depth type string default 80" << std::endl;
+        std::cout << "option name see_noisy type string default 50" << std::endl;
+        std::cout << "option name see_quiet type string default 50" << std::endl;
+        std::cout << "option name asp_delta type string default 25" << std::endl;
+        std::cout << "option name razor_d1 type string default 300" << std::endl;
+        std::cout << "option name razor_d2 type string default 500" << std::endl;
+        std::cout << "option name razor_d3 type string default 700" << std::endl;
+        std::cout << "option name hist_prune type string default 2000" << std::endl;
+        std::cout << "option name lmp_base type string default 3" << std::endl;
+        std::cout << "option name lmp_depth_coeff type string default 1.0" << std::endl;
+        std::cout << "option name se_margin type string default 2" << std::endl;
+        std::cout << "option name se_double_bias type string default 55" << std::endl;
+        std::cout << "option name se_triple_bias type string default 120" << std::endl;
+        std::cout << "option name probcut_beta_margin type string default 150" << std::endl;
+        std::cout << "option name probcut_see_thresh type string default 100" << std::endl;
+        std::cout << "option name sprobcut_beta_margin type string default 350" << std::endl;
+        std::cout << "option name lmr_hist_divisor type string default 4096" << std::endl;
+        std::cout << "option name hist_bonus type string default 32" << std::endl;
+        std::cout << "option name pv_hist_bonus type string default 8" << std::endl;
+        std::cout << "option name policy_bonus_scale type string default 1600" << std::endl;
+        std::cout << "option name policy_rank_scale type string default 1.0" << std::endl;
+        std::cout << "option name policy_tm_disagree type string default 1.35" << std::endl;
+        std::cout << "option name policy_tm_agree type string default 0.88" << std::endl;
+        std::cout << "option name policy_sharp_thresh type string default 0.25" << std::endl;
+
         std::cout << "uciok" << std::endl;
         std::cout.flush();
-
-    } else if (command == "setoption") {
-        // --- SPSA params (try first) ---
+    }else if (command == "setoption") {
+        // --- SPSA params ---
         if (tokens.size() >= 5 && tokens[1] == "name" && tokens[3] == "value") {
             if (trySetSPSA(tokens[2], tokens[4])) {
                 return true;
