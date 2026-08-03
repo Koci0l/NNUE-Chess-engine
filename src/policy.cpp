@@ -1,7 +1,6 @@
 // ============================================================================
 // policy.cpp
 // ============================================================================
-
 #include "policy.h"
 #include "see.h"
 
@@ -13,7 +12,7 @@
 #include <iostream>
 #include <vector>
 
-#if defined(AVX2) || defined(__AVX2__)
+#if defined(__AVX2__) || defined(AVX2)
 #include <immintrin.h>
 #define POLICY_HAS_AVX2 1
 #else
@@ -26,7 +25,6 @@ PolicyNetSmall g_policy_small;
 // ============================================================================
 // Bit helpers
 // ============================================================================
-
 static int popcount64(uint64_t x) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_popcountll(x);
@@ -58,16 +56,25 @@ static int ctz64_local(uint64_t x) {
 }
 
 static uint64_t bswap64_local(uint64_t x) {
-    x = ((x & 0x00000000FFFFFFFFULL) << 32) | ((x & 0xFFFFFFFF00000000ULL) >> 32);
-    x = ((x & 0x0000FFFF0000FFFFULL) << 16) | ((x & 0xFFFF0000FFFF0000ULL) >> 16);
-    x = ((x & 0x00FF00FF00FF00FFULL) << 8)  | ((x & 0xFF00FF00FF00FF00ULL) >> 8);
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_bswap64(x);
+#else
+    x = ((x & 0x00000000FFFFFFFFULL) << 32) |
+        ((x & 0xFFFFFFFF00000000ULL) >> 32);
+
+    x = ((x & 0x0000FFFF0000FFFFULL) << 16) |
+        ((x & 0xFFFF0000FFFF0000ULL) >> 16);
+
+    x = ((x & 0x00FF00FF00FF00FFULL) << 8) |
+        ((x & 0xFF00FF00FF00FF00ULL) >> 8);
+
     return x;
+#endif
 }
 
 // ============================================================================
 // Destination tables (must match inputs.rs)
 // ============================================================================
-
 static constexpr uint64_t FILE_A = 0x0101010101010101ULL;
 static constexpr uint64_t FILE_H = FILE_A << 7;
 
@@ -136,7 +143,6 @@ static inline float crelu01(float x) {
 // ============================================================================
 // PolicyNetT
 // ============================================================================
-
 template <int HL>
 PolicyNetT<HL>::PolicyNetT() {
     for (int sq = 0; sq < 64; ++sq) {
@@ -273,7 +279,9 @@ bool PolicyNetT<HL>::load(const std::string& path) {
     std::vector<std::uint8_t> buf(sz);
 
     if (sz > 0) {
-        in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(sz));
+        in.read(reinterpret_cast<char*>(buf.data()),
+                static_cast<std::streamsize>(sz));
+
         if (!in) {
             std::cerr << "info string Policy: failed reading " << path << std::endl;
             return false;
@@ -286,7 +294,6 @@ bool PolicyNetT<HL>::load(const std::string& path) {
 // ============================================================================
 // Board helpers
 // ============================================================================
-
 template <int HL>
 int PolicyNetT<HL>::stmKingIndex(const chess::Board& board) {
     return board.kingSq(board.sideToMove()).index();
@@ -297,7 +304,6 @@ int PolicyNetT<HL>::flipMask(const chess::Board& board) {
     const int ksq  = stmKingIndex(board);
     const int vert = (board.sideToMove() == chess::Color::BLACK) ? 56 : 0;
     const int hori = ((ksq % 8) > 3) ? 7 : 0;
-
     return vert ^ hori;
 }
 
@@ -361,7 +367,6 @@ uint64_t PolicyNetT<HL>::attacksBySide(const chess::Board& board, chess::Color s
 // ============================================================================
 // Features
 // ============================================================================
-
 template <int HL>
 void PolicyNetT<HL>::collectFeatures(const chess::Board& board,
                                      int* feats,
@@ -421,7 +426,6 @@ void PolicyNetT<HL>::collectFeatures(const chess::Board& board,
 // ============================================================================
 // Move index
 // ============================================================================
-
 template <int HL>
 int PolicyNetT<HL>::mapMoveToIndex(const chess::Board& board,
                                    const chess::Move& m) const {
@@ -440,7 +444,8 @@ int PolicyNetT<HL>::mapMoveToIndex(const chess::Board& board,
         !is_castle && !is_promo && !is_ep &&
         moved.type() == chess::PieceType::PAWN &&
         m.from().file() == m.to().file() &&
-        std::abs(static_cast<int>(m.from().rank()) - static_cast<int>(m.to().rank())) == 2;
+        std::abs(static_cast<int>(m.from().rank()) -
+                 static_cast<int>(m.to().rank())) == 2;
 
     int from_b = m.from().index();
     int to_b   = m.to().index();
@@ -475,7 +480,6 @@ int PolicyNetT<HL>::mapMoveToIndex(const chess::Board& board,
     } else if (is_castle) {
         const int is_ks = king_side ? 1 : 0;
         const int is_hm = (hm == 0) ? 1 : 0;
-
         idx = offsets[5][64] + POLICY_PROMOS + (is_ks ^ is_hm);
     } else if (is_dbl) {
         idx = offsets[5][64] + POLICY_PROMOS + 2 + (src % 8);
@@ -496,9 +500,10 @@ int PolicyNetT<HL>::mapMoveToIndex(const chess::Board& board,
         good_see = (POLICY_CASTLE_SEE_FORCE != 0);
 #else
         const chess::Square from_sq = m.from();
-        const chess::Square to_sq(static_cast<chess::Square::underlying>(to_b));
-        const chess::Move king_walk = chess::Move::make(from_sq, to_sq);
+        const chess::Square to_sq =
+            chess::Square(static_cast<chess::Square::underlying>(to_b));
 
+        const chess::Move king_walk = chess::Move::make(from_sq, to_sq);
         good_see = chess::see::see_ge(board, king_walk, POLICY_SEE_TH);
 #endif
     } else {
@@ -508,13 +513,13 @@ int PolicyNetT<HL>::mapMoveToIndex(const chess::Board& board,
     const int index = from_to * static_cast<int>(good_see) + idx;
 
     if (index < 0 || index >= num_moves) return -1;
+
     return index;
 }
 
 // ============================================================================
 // SIMD helpers
 // ============================================================================
-
 #if POLICY_HAS_AVX2
 static inline float hsum256(__m256 v) {
     __m128 hi = _mm256_extractf128_ps(v, 1);
@@ -531,7 +536,6 @@ static inline float hsum256(__m256 v) {
 // ============================================================================
 // Hidden (2-layer: l0 -> crelu -> pm -> l1 -> crelu -> pm)
 // ============================================================================
-
 template <int HL>
 static void computeHidden(const PolicyNetT<HL>& net,
                           const int* feats,
@@ -541,7 +545,6 @@ static void computeHidden(const PolicyNetT<HL>& net,
 
     // --- Layer 0: sparse gather -> HL ---
     float h0[HL];
-
     std::memcpy(h0, net.l0b.data(), sizeof(float) * HL);
 
     for (int i = 0; i < nfeats; ++i) {
@@ -601,7 +604,6 @@ static void computeHidden(const PolicyNetT<HL>& net,
 
     // --- Layer 1: dense matmul HL_PAIR -> HL ---
     float h2[HL];
-
     std::memcpy(h2, net.l1b.data(), sizeof(float) * HL);
 
     for (int i = 0; i < HP; ++i) {
@@ -613,7 +615,6 @@ static void computeHidden(const PolicyNetT<HL>& net,
         const __m256 s = _mm256_set1_ps(h1[i]);
 
         int j = 0;
-
         for (; j + 8 <= HL; j += 8) {
             __m256 acc = _mm256_loadu_ps(h2 + j);
             __m256 w   = _mm256_loadu_ps(row + j);
@@ -662,7 +663,6 @@ static void computeHidden(const PolicyNetT<HL>& net,
 // ============================================================================
 // Output logit (layer 2)
 // ============================================================================
-
 template <int HL>
 static float logitForMoveIndex(const PolicyNetT<HL>& net, const float* h, int mi) {
     constexpr int HP = PolicyNetT<HL>::HL_PAIR;
@@ -673,7 +673,6 @@ static float logitForMoveIndex(const PolicyNetT<HL>& net, const float* h, int mi
     __m256 acc = _mm256_setzero_ps();
 
     int k = 0;
-
     for (; k + 8 <= HP; k += 8) {
         __m256 hv = _mm256_loadu_ps(h + k);
         __m256 wv = _mm256_loadu_ps(row + k);
@@ -701,7 +700,6 @@ static float logitForMoveIndex(const PolicyNetT<HL>& net, const float* h, int mi
 // ============================================================================
 // Helpers
 // ============================================================================
-
 static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
     if (m.typeOf() == chess::Move::PROMOTION) return false;
     if (m.typeOf() == chess::Move::ENPASSANT) return false;
@@ -712,7 +710,6 @@ static bool isQuietMoveLocal(const chess::Board& board, const chess::Move& m) {
 // ============================================================================
 // Forward
 // ============================================================================
-
 template <int HL>
 bool PolicyNetT<HL>::logitsLegalMoves(const chess::Board& board,
                                       const chess::Movelist& moves,
@@ -721,12 +718,10 @@ bool PolicyNetT<HL>::logitsLegalMoves(const chess::Board& board,
 
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
-
     collectFeatures(board, feats, nfeats);
 
     constexpr int HP = PolicyNetT<HL>::HL_PAIR;
     float h[HP];
-
     computeHidden(*this, feats, nfeats, h);
 
     for (int i = 0; i < static_cast<int>(moves.size()); ++i) {
@@ -794,28 +789,23 @@ bool PolicyNetT<HL>::rankLegalQuiets(const chess::Board& board,
     for (int i = 0; i < n; ++i) {
         if (!isQuietMoveLocal(board, moves[i])) continue;
         if (nq >= 256) break;
-
         quiet_i[nq++] = i;
     }
 
     if (out_nq) *out_nq = nq;
-
     if (nq <= 0) return true;
 
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
-
     collectFeatures(board, feats, nfeats);
 
     constexpr int HP = PolicyNetT<HL>::HL_PAIR;
     float h[HP];
-
     computeHidden(*this, feats, nfeats, h);
 
     for (int q = 0; q < nq; ++q) {
         const int i = quiet_i[q];
         const int mi = mapMoveToIndex(board, moves[i]);
-
         logits[q] = (mi >= 0) ? logitForMoveIndex(*this, h, mi) : -1e9f;
     }
 
@@ -839,7 +829,6 @@ bool PolicyNetT<HL>::rankLegalQuiets(const chess::Board& board,
 // ============================================================================
 // Root advice
 // ============================================================================
-
 template <int HL>
 bool PolicyNetT<HL>::rootAdvice(const chess::Board& board,
                                 chess::Move& out_top,
@@ -861,7 +850,6 @@ bool PolicyNetT<HL>::rootAdvice(const chess::Board& board,
     std::vector<float> probs_heap;
 
     float* probs = probs_stack;
-
     if (moves.size() > 256) {
         probs_heap.resize(moves.size());
         probs = probs_heap.data();
@@ -896,7 +884,6 @@ bool PolicyNetT<HL>::rootAdvice(const chess::Board& board,
 // ============================================================================
 // Debug
 // ============================================================================
-
 template <int HL>
 void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
     if (!loaded) {
@@ -914,7 +901,6 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
 
     int feats[POLICY_MAX_ACTIVE];
     int nfeats = 0;
-
     collectFeatures(board, feats, nfeats);
 
     const int flip = flipMask(board);
@@ -941,7 +927,6 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
     {
         constexpr int HP = PolicyNetT<HL>::HL_PAIR;
         float h[HP];
-
         computeHidden(*this, feats, nfeats, h);
 
         std::cout << "info string h_out[0..7]:";
@@ -976,7 +961,8 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
 
     const int nshow = std::min(topN, static_cast<int>(moves.size()));
 
-    std::cout << "info string rank  move     idx   see  logit      prob   qrank" << std::endl;
+    std::cout << "info string rank  move     idx   see  logit      prob   qrank"
+              << std::endl;
 
     for (int r = 0; r < nshow; ++r) {
         const int i = order[r];
@@ -988,11 +974,12 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
 
         if (m.typeOf() == chess::Move::CASTLING) {
             const bool ks = m.to() > m.from();
-            const int kto = chess::Square::castling_king_square(ks, board.at(m.from()).color()).index();
+            const int kto = chess::Square::castling_king_square(
+                ks, board.at(m.from()).color()).index();
+
             const chess::Move kw = chess::Move::make(
                 m.from(),
-                chess::Square(static_cast<chess::Square::underlying>(kto))
-            );
+                chess::Square(static_cast<chess::Square::underlying>(kto)));
 
             good_see = chess::see::see_ge(board, kw, POLICY_SEE_TH);
         } else {
@@ -1000,7 +987,6 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
         }
 
         char buf[192];
-
         std::snprintf(buf, sizeof(buf),
                       "info string #%02d  %-6s  %5d  %s  %+9.4f  %6.2f%%  %5d",
                       r + 1,
@@ -1015,7 +1001,6 @@ void PolicyNetT<HL>::debugPosition(const chess::Board& board, int topN) const {
     }
 
     double ent = 0.0;
-
     for (float p : probs) {
         if (p > 1e-12f) {
             ent -= double(p) * std::log(double(p));
@@ -1045,11 +1030,12 @@ void PolicyNetT<HL>::debugMove(const chess::Board& board, const chess::Move& m) 
 
     if (m.typeOf() == chess::Move::CASTLING) {
         const bool ks = m.to() > m.from();
-        const int kto = chess::Square::castling_king_square(ks, board.at(m.from()).color()).index();
+        const int kto = chess::Square::castling_king_square(
+            ks, board.at(m.from()).color()).index();
+
         const chess::Move kw = chess::Move::make(
             m.from(),
-            chess::Square(static_cast<chess::Square::underlying>(kto))
-        );
+            chess::Square(static_cast<chess::Square::underlying>(kto)));
 
         good_see = chess::see::see_ge(board, kw, POLICY_SEE_TH);
     } else {
@@ -1124,9 +1110,120 @@ void PolicyNetT<HL>::debugMove(const chess::Board& board, const chess::Move& m) 
 }
 
 // ============================================================================
+// Small in-search policy view computation
+// Quiet-only, one hidden pass.
+// ============================================================================
+template <int HL>
+bool computeSmallPolicyViewForNet(const PolicyNetT<HL>& net,
+                                  const chess::Board& board,
+                                  const chess::Movelist& legals,
+                                  SmallPolicyView& out) {
+    out.clear();
+
+    if (!net.loaded || legals.size() == 0 || legals.size() > 256) {
+        return false;
+    }
+
+    const int n = static_cast<int>(legals.size());
+
+    int qidx[256];
+    int nq = 0;
+
+    for (int i = 0; i < n; ++i) {
+        if (policyQuietLocal(board, legals[i])) {
+            qidx[nq++] = i;
+        }
+    }
+
+    out.nq = nq;
+
+    if (nq == 0) {
+        out.ok = true;
+        return true;
+    }
+
+    int feats[POLICY_MAX_ACTIVE];
+    int nfeats = 0;
+    net.collectFeatures(board, feats, nfeats);
+
+    constexpr int HP = PolicyNetT<HL>::HL_PAIR;
+    float h[HP];
+    computeHidden(net, feats, nfeats, h);
+
+    float logits[256];
+    float max_q = -1e30f;
+
+    for (int j = 0; j < nq; ++j) {
+        const int legal_i = qidx[j];
+        const int mi = net.mapMoveToIndex(board, legals[legal_i]);
+
+        logits[j] = (mi >= 0) ? logitForMoveIndex(net, h, mi) : -1e9f;
+        max_q = std::max(max_q, logits[j]);
+    }
+
+    float qp[256];
+    float sum = 0.0f;
+
+    for (int j = 0; j < nq; ++j) {
+        qp[j] = std::exp(logits[j] - max_q);
+        sum += qp[j];
+    }
+
+    if (sum <= 0.0f) sum = 1.0f;
+
+    for (int j = 0; j < nq; ++j) {
+        qp[j] /= sum;
+
+        const int legal_i = qidx[j];
+        out.rel[legal_i] =
+            std::log(std::max(qp[j], 1e-9f) * static_cast<float>(nq));
+    }
+
+    int order[256];
+    for (int j = 0; j < nq; ++j) order[j] = j;
+
+    std::sort(order, order + nq, [&](int a, int b) {
+        return qp[a] > qp[b];
+    });
+
+    for (int r = 0; r < nq; ++r) {
+        const int legal_i = qidx[order[r]];
+        out.rank[legal_i] = r;
+    }
+
+    double qent = 0.0;
+    for (int j = 0; j < nq; ++j) {
+        if (qp[j] > 1e-12f) {
+            qent -= double(qp[j]) * std::log(double(qp[j]));
+        }
+    }
+
+    float norm_qent = 0.0f;
+    if (nq > 1) {
+        norm_qent = static_cast<float>(qent / std::log(static_cast<float>(nq)));
+    }
+
+    float sharp = std::clamp((0.90f - norm_qent) / 0.35f, 0.0f, 1.0f);
+    const float top_p = qp[order[0]];
+
+    if (top_p < 0.12f) {
+        sharp *= 0.5f;
+    }
+
+    out.sharp = sharp;
+    out.ok = true;
+    return true;
+}
+
+bool computeSmallPolicyView(const chess::Board& board,
+                            const chess::Movelist& legals,
+                            SmallPolicyView& out) {
+    return computeSmallPolicyViewForNet(g_policy_small, board, legals, out);
+}
+
+// ============================================================================
 // Explicit instantiations
 // ============================================================================
-
 template struct PolicyNetT<POLICY_HL>;
 
 #if (KOCIOLEK_POLICY_HL) != (POLICY_SMALL_HL)

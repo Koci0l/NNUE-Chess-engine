@@ -1,6 +1,8 @@
 #pragma once
+
 #include "chess.hpp"
 #include "types.h"
+#include "policy.h"
 #include <vector>
 
 struct MovePickerContext {
@@ -11,6 +13,7 @@ struct MovePickerContext {
     SearchStack* ss = nullptr;
 
     MovePickerContext() = default;
+
     MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
                       int ply_, SearchStack* ss_)
         : tt_move(tt), counter_move(counter), side_to_move(side),
@@ -33,19 +36,31 @@ enum class MovePickStage {
 class MovePicker {
 public:
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-               int depth, bool skip_quiets, bool use_policy_unused = false);
+               int depth, bool skip_quiets, bool use_small_policy = false);
 
     chess::Move next(bool& is_quiet_out);
+
     int lastScore() const { return m_last_score; }
 
     // FIX-3: Allow search to skip remaining quiets without killing bad captures.
-    // Call this instead of `break` when LMP triggers.
     void skipQuiets() {
         if (m_stage == MovePickStage::GENERATE_QUIETS ||
             m_stage == MovePickStage::QUIETS) {
             m_stage = MovePickStage::BAD_CAPTURES;
         }
     }
+
+    // Small-policy helpers.
+    const SmallPolicyView& smallPolicy() {
+        ensureSmallPolicy();
+        return m_small;
+    }
+
+    const SmallPolicyView& smallPolicyIfReady() const {
+        return m_small;
+    }
+
+    int legalIndex(const chess::Move& move) const;
 
 private:
     const chess::Board& m_board;
@@ -71,17 +86,24 @@ private:
 
     int m_last_score = 0;
 
-    // FIX (Tier 2 speed): removed dead m_returned[512] / wasReturned / markReturned
-
     chess::Movelist m_all_legal;
     bool m_legal_generated = false;
 
+    // Small policy inside search.
+    bool m_use_small_policy = false;
+    bool m_small_attempted = false;
+    SmallPolicyView m_small;
+
     void ensureLegal();
     bool isValid(const chess::Move& move) const;
+
     int scoreOneCapture(const chess::Move& move);
-    int scoreOneQuiet(const chess::Move& move);
+    int scoreOneQuiet(const chess::Move& move, int legal_idx);
+
     void scoreCaptures();
     void scoreQuiets();
+
+    void ensureSmallPolicy();
 };
 
 enum class QMovePickStage {
@@ -94,7 +116,9 @@ enum class QMovePickStage {
 class QSearchMovePicker {
 public:
     QSearchMovePicker(const chess::Board& board, chess::Move tt_move, bool in_check);
+
     chess::Move next();
+
     int lastScore() const { return m_last_score; }
 
 private:
@@ -106,6 +130,7 @@ private:
     ScoredMove m_moves[256];
     int m_move_count = 0;
     int m_move_idx = 0;
+
     int m_last_score = 0;
 
     chess::Movelist m_legal;
@@ -119,7 +144,9 @@ private:
 
 int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
                          const MovePickerContext& ctx);
+
 std::vector<ScoredMove> scoreMoves(const chess::Movelist& moves,
                                    const chess::Board& board,
                                    const MovePickerContext& ctx);
+
 void pickNextMove(std::vector<ScoredMove>& moves, size_t current);

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "chess.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -12,7 +11,6 @@
 // ============================================================================
 // Matches monty/bullet policy trainer (inputs.rs + model.rs)
 // ============================================================================
-
 constexpr int POLICY_PLANE       = 768;
 constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
 
@@ -26,7 +24,6 @@ constexpr int POLICY_INPUT_SIZE  = POLICY_PLANE * 4; // 3072
 
 constexpr int POLICY_HL          = KOCIOLEK_POLICY_HL;
 constexpr int POLICY_HL_PAIR     = POLICY_HL / 2;
-
 constexpr int POLICY_MAX_ACTIVE  = 32;
 constexpr int POLICY_QA          = 128;
 constexpr int POLICY_PROMOS      = 4 * 22;           // 88
@@ -41,15 +38,12 @@ constexpr int POLICY_MIN_DEPTH     = 6;
 // ============================================================================
 // Policy-disagreement time management
 // ============================================================================
-
 constexpr int    POLICY_TM_MIN_DEPTH    = 6;
 constexpr float  POLICY_TM_AGREE_CONF   = 0.35f;
 constexpr float  POLICY_TM_UNCERTAIN    = 0.18f;
-
 constexpr double POLICY_TM_DISAGREE     = 1.35;
 constexpr double POLICY_TM_UNCERTAIN_S  = 1.25;
 constexpr double POLICY_TM_AGREE_S      = 0.88;
-
 constexpr float  POLICY_TM_ENTROPY_GATE = 0.80f;
 
 constexpr float POLICY_REL_NONE = -1000.0f;
@@ -57,10 +51,8 @@ constexpr float POLICY_REL_NONE = -1000.0f;
 // ============================================================================
 // RootPolicy
 // ============================================================================
-
 struct RootPolicy {
     bool ok = false;
-
     int nlegal = 0;
     int nq = 0;
 
@@ -117,7 +109,6 @@ struct RootPolicy {
 // ============================================================================
 // PolicyNetT
 // ============================================================================
-
 template <int Hidden_>
 struct PolicyNetT {
     static_assert(Hidden_ > 0 && (Hidden_ % 2) == 0,
@@ -198,7 +189,6 @@ extern PolicyNetSmall g_policy_small;
 // ============================================================================
 // Root policy computation
 // ============================================================================
-
 inline bool policyQuietLocal(const chess::Board& board, const chess::Move& m) {
     if (m.typeOf() == chess::Move::PROMOTION) return false;
     if (m.typeOf() == chess::Move::ENPASSANT) return false;
@@ -245,7 +235,6 @@ inline bool computeRootPolicyForNet(const PolicyNetT<HL>& net,
     }
 
     float logits[256];
-
     if (!net.logitsLegalMoves(board, rp.legals, logits)) {
         return false;
     }
@@ -302,7 +291,6 @@ inline bool computeRootPolicyForNet(const PolicyNetT<HL>& net,
 
     for (int i = 0; i < rp.nlegal; ++i) {
         if (!policyQuietLocal(board, rp.legals[i])) continue;
-
         qidx[nq++] = i;
         max_q = std::max(max_q, logits[i]);
     }
@@ -325,7 +313,6 @@ inline bool computeRootPolicyForNet(const PolicyNetT<HL>& net,
 
             const int legal_i = qidx[j];
             rp.quiet_prob[legal_i] = qp[j];
-
             rp.rel[legal_i] =
                 std::log(std::max(qp[j], 1e-9f) * static_cast<float>(nq));
         }
@@ -363,7 +350,6 @@ inline bool computeRootPolicyForNet(const PolicyNetT<HL>& net,
         rp.quiet_norm_entropy = norm_qent;
 
         float sharpness = std::clamp((0.90f - norm_qent) / 0.35f, 0.0f, 1.0f);
-
         if (rp.top_quiet_prob < 0.12f) {
             sharpness *= 0.5f;
         }
@@ -384,3 +370,39 @@ inline bool computeRootPolicy(const chess::Board& board, RootPolicy& rp) {
 inline bool computeSmallRootPolicy(const chess::Board& board, RootPolicy& rp) {
     return computeRootPolicyForNet(g_policy_small, board, rp);
 }
+
+// ============================================================================
+// Small in-search policy view
+// ============================================================================
+constexpr int   POLICY_SMALL_SEARCH_MIN_DEPTH = 6;
+constexpr int   POLICY_SMALL_SEARCH_MAX_DEPTH = 64;
+constexpr float POLICY_SMALL_SEARCH_SHARP_MIN = 0.15f;
+
+struct SmallPolicyView {
+    bool  ok = false;
+    float sharp = 0.0f;
+    int   nq = 0;
+
+    // Indexed by legal-move index in the MoveList used at that node.
+    int   rank[256];
+    float rel[256];
+
+    SmallPolicyView() {
+        clear();
+    }
+
+    void clear() {
+        ok = false;
+        sharp = 0.0f;
+        nq = 0;
+
+        for (int i = 0; i < 256; ++i) {
+            rank[i] = -1;
+            rel[i] = POLICY_REL_NONE;
+        }
+    }
+};
+
+bool computeSmallPolicyView(const chess::Board& board,
+                            const chess::Movelist& legals,
+                            SmallPolicyView& out);
