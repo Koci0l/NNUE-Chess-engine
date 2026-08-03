@@ -297,35 +297,29 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
     int original_alpha = alpha;
     int best_score;
-    int stand_pat = 0;
+    int futility_base;
 
     if (!in_check) {
-        stand_pat = scaleNNUE(g_nnue.evaluate(board, thread));
-        best_score = stand_pat;
+        futility_base = scaleNNUE(g_nnue.evaluate(board, thread));
+        best_score = futility_base;
         if (best_score >= beta) {
             storeTT(hash, 0, best_score, chess::Move(), TT_LOWER, ply_from_root);
             return best_score;
         }
         if (best_score > alpha) alpha = best_score;
     } else {
+        futility_base = -MATE_SCORE;  // never used (delta gated on !in_check)
         best_score = -MATE_SCORE + ply_from_root;
     }
 
     QSearchMovePicker mp(board, tt_move, in_check);
     chess::Move best_move;
     bool searched_any = false;
-    int move_count = 0;
-
-    // Move count limits: tighter when not in check (captures are few),
-    // looser in check (evasions can be numerous but most are bad).
-    constexpr int QSEARCH_MAX_MOVES_NOT_IN_CHECK = 12;
-    constexpr int QSEARCH_MAX_MOVES_IN_CHECK     = 16;
 
     while (true) {
         chess::Move move = mp.next();
         if (move == chess::Move()) break;
         searched_any = true;
-        move_count++;
 
         bool is_tactical = board.at(move.to()) != chess::Piece::NONE ||
                            move.typeOf() == chess::Move::PROMOTION ||
@@ -335,24 +329,24 @@ int quiescence(chess::Board& board, int alpha, int beta,
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
             continue;
 
-        // ── Delta pruning ─────────────────────────────────────────────
+        // ── Delta pruning ──────────────────────────────────────────────
         if (!in_check && is_tactical) {
-            int victim_value = 0;
+            int gain = 0;
             if (move.typeOf() == chess::Move::ENPASSANT) {
-                victim_value = pieceValue(chess::PieceType::PAWN);
+                gain = pieceValue(chess::PieceType::PAWN);
             } else if (board.at(move.to()) != chess::Piece::NONE) {
-                victim_value = pieceValue(board.at(move.to()).type());
+                gain = pieceValue(board.at(move.to()).type());
             }
-            // Promotion adds the promoted piece value
             if (move.typeOf() == chess::Move::PROMOTION) {
-                victim_value += pieceValue(move.promotionType()) - pieceValue(chess::PieceType::PAWN);
+                gain += pieceValue(move.promotionType())
+                      - pieceValue(chess::PieceType::PAWN);
             }
-
-            constexpr int DELTA_MARGIN = 150;
-            if (stand_pat + victim_value + DELTA_MARGIN < alpha) {
+            // Conservative margin: 200 cp.  If even the best-case
+            // material gain can't reach alpha, skip.
+            if (futility_base + gain + 200 < alpha)
                 continue;
-            }
         }
+        // ── End delta pruning ──────────────────────────────────────────
 
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
