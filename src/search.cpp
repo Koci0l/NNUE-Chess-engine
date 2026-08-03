@@ -271,11 +271,12 @@ int quiescence(chess::Board& board, int alpha, int beta,
                ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
 
-    if (ply_from_root >= MAX_PLY)
+    if (ply_from_root >= MAX_PLY) {
         return scaleNNUE(g_nnue.evaluate(board, thread));
-
-    if (isDrawByRepetition(board) || isDrawByFiftyMove(board))
+    }
+    if (isDrawByRepetition(board) || isDrawByFiftyMove(board)) {
         return getDrawScore(ply_from_root);
+    }
 
     bool in_check = board.inCheck();
     uint64_t hash = getZobristHash(board);
@@ -297,7 +298,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
     int original_alpha = alpha;
     int best_score;
-    int futility_base;
+    int futility_base;  // stand-pat eval, used ONLY for delta pruning
 
     if (!in_check) {
         futility_base = scaleNNUE(g_nnue.evaluate(board, thread));
@@ -308,7 +309,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
         }
         if (best_score > alpha) alpha = best_score;
     } else {
-        futility_base = -MATE_SCORE;  // never used (delta gated on !in_check)
+        futility_base = -MATE_SCORE;  // never used: delta gated on !in_check
         best_score = -MATE_SCORE + ply_from_root;
     }
 
@@ -325,11 +326,15 @@ int quiescence(chess::Board& board, int alpha, int beta,
                            move.typeOf() == chess::Move::PROMOTION ||
                            move.typeOf() == chess::Move::ENPASSANT;
 
-        // SEE pruning
-        if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
+        // SEE pruning (existing)
+        if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0)) {
             continue;
+        }
 
         // ── Delta pruning ──────────────────────────────────────────────
+        // GATED ON !in_check: NEVER prune evasions.
+        // Uses futility_base (the original stand-pat), NOT best_score.
+        // Margin 250: conservative.  SPSA later in [150, 400].
         if (!in_check && is_tactical) {
             int gain = 0;
             if (move.typeOf() == chess::Move::ENPASSANT) {
@@ -341,10 +346,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
                 gain += pieceValue(move.promotionType())
                       - pieceValue(chess::PieceType::PAWN);
             }
-            // Conservative margin: 200 cp.  If even the best-case
-            // material gain can't reach alpha, skip.
-            if (futility_base + gain + 200 < alpha)
+            if (futility_base + gain + 250 < alpha) {
                 continue;
+            }
         }
         // ── End delta pruning ──────────────────────────────────────────
 
@@ -368,13 +372,14 @@ int quiescence(chess::Board& board, int alpha, int beta,
         if (eval > alpha) alpha = eval;
     }
 
-    if (in_check && !searched_any)
+    if (in_check && !searched_any) {
         return -MATE_SCORE + ply_from_root;
+    }
 
     TTFlag flag = (best_score > original_alpha) ? TT_EXACT : TT_UPPER;
-    if (best_move != chess::Move() || !in_check)
+    if (best_move != chess::Move() || !in_check) {
         storeTT(hash, 0, best_score, best_move, flag, ply_from_root);
-
+    }
     return best_score;
 }
 
