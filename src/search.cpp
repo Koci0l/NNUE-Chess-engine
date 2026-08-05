@@ -1160,25 +1160,36 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     int reduction = 0;
 
                     bool can_reduce_root = root_lmr_enabled && !root_in_check &&
-                                           !gives_check && root_is_quiet &&
-                                           move != best_move && new_depth > 1;
+                       !gives_check && root_is_quiet &&
+                       move != best_move && new_depth > 1;
 
                     if (can_reduce_root) {
                         int move_no = root_move_count + 1;
                         reduction = lmr_reductions[std::min(depth, 63)]
-                                                 [std::min(move_no, 63)];
+                                                [std::min(move_no, 63)];
 
                         if (rootPolicy.ok) {
-                            int idx = rootPolicy.find(move);
+                            const int idx = rootPolicy.find(move);
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
-                                float rel = rootPolicy.rel[idx];
-                                float sharp = rootPolicy.quiet_sharpness;
+                                const int r = rootPolicy.quiet_rank[idx];
+                                const float sharp = rootPolicy.quiet_sharpness;
 
-                                float adj = -0.85f * rel;
-                                adj = std::clamp(adj, -2.0f, 3.0f);
-                                adj *= sharp;
+                                // THE change: top-K policy quiets get full depth
+                                if (r < POLICY_ROOT_LMR_TOP && sharp >= 0.25f) {
+                                    reduction = 0;
+                                } else {
+                                    // Tail: trust policy more — cut bad quiets deeper
+                                    float rel = rootPolicy.rel[idx];
+                                    float adj = -0.85f * rel;          // bad rel → more reduction
+                                    adj = std::clamp(adj, -1.0f, 4.0f);
+                                    adj *= sharp;
 
-                                reduction += int(std::lround(adj));
+                                    // Extra step-down by rank
+                                    if (r >= 10) adj += 1.0f * sharp;
+                                    if (r >= 20) adj += 1.0f * sharp;
+
+                                    reduction += int(std::lround(adj));
+                                }
                             }
                         }
 
