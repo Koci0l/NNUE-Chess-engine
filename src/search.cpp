@@ -410,46 +410,6 @@ int quiescence(chess::Board& board, int alpha, int beta,
     return best_score;
 }
 
-struct CheckSquares {
-    uint64_t pawn;
-    uint64_t knight;
-    uint64_t bishop;
-    uint64_t rook;
-    uint64_t queen;
-};
-
-static inline CheckSquares computeCheckSquares(const chess::Board& board) {
-    // Squares from which each piece type would give check to the enemy king.
-    // We compute attacks FROM the enemy king's square (reversed perspective).
-    chess::Color enemy = ~board.sideToMove();
-    chess::Square ek = board.kingSq(enemy);
-    uint64_t occ = board.occ().getBits();
-
-    CheckSquares cs;
-    cs.pawn   = chess::attacks::pawn(enemy, ek).getBits();
-    cs.knight = chess::attacks::knight(ek).getBits();
-    cs.bishop = chess::attacks::bishop(ek, occ).getBits();
-    cs.rook   = chess::attacks::rook(ek, occ).getBits();
-    cs.queen  = cs.bishop | cs.rook;
-
-    return cs;
-}
-
-static inline bool moveGivesCheck(const chess::Board& board, const chess::Move& move,
-                                  const CheckSquares& cs) {
-    chess::Piece moved = board.at(move.from());
-    uint64_t to_bit = 1ULL << move.to().index();
-
-    switch (static_cast<int>(moved.type())) {
-        case 0: return (cs.pawn & to_bit) != 0;     // PAWN
-        case 1: return (cs.knight & to_bit) != 0;   // KNIGHT
-        case 2: return (cs.bishop & to_bit) != 0;   // BISHOP
-        case 3: return (cs.rook & to_bit) != 0;     // ROOK
-        case 4: return (cs.queen & to_bit) != 0;    // QUEEN
-        default: return false;                       // KING never "gives check" this way
-    }
-}
-
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss, chess::Move excluded_move) {
@@ -671,11 +631,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return small_probcut_beta;
     }
 
-    CheckSquares check_sq;
-    if (!in_check) {
-        check_sq = computeCheckSquares(board);
-    }
-
     chess::Move counter_move = g_counterMoves.get(previous_move);
     chess::Color side_to_move = board.sideToMove();
 
@@ -748,19 +703,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         move_count++;
 
         chess::Piece moved_piece = board.at(move.from());
-        bool gives_check = in_check ? false : moveGivesCheck(board, move, check_sq);
 
-        // For promotions, the promoted piece type matters:
-        if (move.typeOf() == chess::Move::PROMOTION && !in_check) {
-            uint64_t to_bit = 1ULL << move.to().index();
-            switch (static_cast<int>(move.promotionType())) {
-                case 1: gives_check = (check_sq.knight & to_bit) != 0; break;
-                case 2: gives_check = (check_sq.bishop & to_bit) != 0; break;
-                case 3: gives_check = (check_sq.rook   & to_bit) != 0; break;
-                case 4: gives_check = (check_sq.queen  & to_bit) != 0; break;
-                default: break;
-            }
-        }
+        // Full check detection (direct + discovered + EP + castle + promo).
+        // Must run before makeMove so futility / LMR stay correct.
+        const bool gives_check = !in_check && board.givesCheck(move);
 
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
@@ -967,6 +913,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     if (moves.size() == 1) {
         if (!g_silent) std::cout << "info string only move" << std::endl;
         if (score_out) *score_out = 0;
+        if (nodes_out) *nodes_out = 0;
         return moves[0];
     }
 
