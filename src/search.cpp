@@ -799,11 +799,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         } else {
             if (move_count == 1) {
-                // First move: full window; child cutNode = !cutNode
-                // (at non-PV this window equals null window)
+                // First move: full window
+                // If PV node, child is PV node => cutNode = false
+                // If NonPV node, child is All/Cut node => cutNode = !cutNode
+                bool child_cutNode = is_pv_node ? false : !cutNode;
+                
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), /*cutNode=*/!cutNode);
+                                  chess::Move(), /*cutNode=*/child_cutNode);
             } else {
                 // Scout: flip
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
@@ -1181,10 +1184,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         int verify_margin = policy_protected ? 20 : 0;
 
                         if (eval > alpha - verify_margin) {
-                            // research null-window — flip (root PV => false)
+                            // research null-window — root is PV node (cutNode=false), 
+                            // so scout children expect to be Cut Nodes (true).
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
                                               thread, &tm, stats, true, move, ss, chess::Move(),
-                                              /*cutNode=*/false);
+                                              /*cutNode=*/true);
                         }
                     }
 
