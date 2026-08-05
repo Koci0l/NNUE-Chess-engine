@@ -12,7 +12,8 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, c
 int quiescence(chess::Board& board, int alpha, int beta,
                ThreadInfo& thread, int ply_from_root, SearchStats& stats);
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
-              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
+              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
+              bool allow_null, bool cutNode,
               chess::Move previous_move, SearchStack* ss,
               chess::Move excluded_move = chess::Move());
               

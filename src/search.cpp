@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <vector>
 #include <chrono>
+#include <cassert>
 
 bool g_silent = false;
 
@@ -238,7 +239,8 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
 SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int ply_from_root,
                                 ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
                                 chess::Move tt_move, uint64_t hash,
-                                bool is_pv_node, bool is_quiet_move, SearchStack* ss) {
+                                bool is_pv_node, bool is_quiet_move, bool cutNode,
+                                SearchStack* ss) {
     SEResult out;
 
     if (depth < SE_MIN_DEPTH || tt_move == chess::Move()) return out;
@@ -260,7 +262,9 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
     if (seDepth <= 0) return out;
 
     int val = alphaBeta(board, seDepth, singular_beta - 1, singular_beta,
-                        ply_from_root, thread, tm, stats, false, chess::Move(), ss, tt_move);
+                        ply_from_root, thread, tm, stats,
+                        /*allow_null=*/false, /*cutNode=*/cutNode,
+                        chess::Move(), ss, tt_move);
 
     if (val < singular_beta) {
         int ext = 1;
@@ -276,7 +280,10 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
         return out;
     }
 
-    if (tt_score >= beta) out.ext = -1;
+    // Negative extensions: the TT move is not singular, so search it shallower.
+    if (tt_score >= beta) out.ext = -2;   // was -1
+    else if (cutNode)     out.ext = -1;   // NEW
+
     return out;
 }
 
@@ -411,7 +418,8 @@ int quiescence(chess::Board& board, int alpha, int beta,
 }
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
-              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
+              ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
+              bool allow_null, bool cutNode,
               chess::Move previous_move, SearchStack* ss, chess::Move excluded_move) {
     stats.nodes++;
 
@@ -436,6 +444,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     bool is_pv_node = (beta - alpha) > 1;
     bool in_singular_search = (excluded_move != chess::Move());
+
+    assert(!(is_pv_node && cutNode));
+    cutNode = cutNode && !is_pv_node;   // defensive, in case an aspiration window collapses
 
     uint64_t hash = getZobristHash(board);
 
@@ -466,10 +477,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // IID reduction when no TT move
+    // IID / IIR reduction when no TT move
     if (!in_singular_search && !is_pv_node && depth >= 4 &&
         tt_move == chess::Move() && !in_check) {
-        depth--;
+        depth -= 1 + (cutNode && depth >= 7);
     }
 
     int raw_static_eval = 0;
@@ -535,7 +546,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         ss[ply_from_root].moved_piece = chess::Piece::NONE;
 
         int null_score = -alphaBeta(board, depth - R - 1, -beta, -beta + 1,
-                                    ply_from_root + 1, thread, tm, stats, false,
+                                    ply_from_root + 1, thread, tm, stats,
+                                    /*allow_null=*/false, /*cutNode=*/!cutNode,
                                     chess::Move(), ss);
 
         thread.accumulatorStack.pop();
@@ -605,7 +617,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 if (probcut_value >= probcut_beta) {
                     probcut_value = -alphaBeta(board, probcut_depth,
                                                -probcut_beta, -probcut_beta + 1,
-                                               ply_from_root + 1, thread, tm, stats, false,
+                                               ply_from_root + 1, thread, tm, stats,
+                                               /*allow_null=*/false, /*cutNode=*/!cutNode,
                                                move, ss);
                 }
 
@@ -695,12 +708,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && move == tt_move && !in_check) {
             auto se = probeSingularExtension(board, depth, beta, ply_from_root,
                                              thread, tm, stats, tt_move, hash,
-                                             is_pv_node, is_quiet, ss);
+                                             is_pv_node, is_quiet, cutNode, ss);
             if (se.multicut) return se.mcScore;
-            se_ext = std::clamp(se.ext, -1, 3);
+            se_ext = std::clamp(se.ext, -2, 3);      // widened from -1
         }
 
-                move_count++;
+        move_count++;
 
         chess::Piece moved_piece = board.at(move.from());
 
@@ -746,11 +759,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
 
-            if (move == tt_move) reduction = 0;
-            else if (move_count <= 3) reduction = std::max(0, reduction - 1);
+            if (move_count <= 3) reduction = std::max(0, reduction - 1);
 
             if (!is_pv_node) reduction += 1;
-            if (!improving) reduction += 1;
+            if (!improving)  reduction += 1;
+            if (cutNode)     reduction += 2;          // <<< NEW: the big one
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
@@ -759,33 +772,44 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
+                // A reduced null-window search is a cut node by construction.
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats,
+                                  true, /*cutNode=*/true, move, ss);
 
                 if (eval > alpha) {
                     eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                      ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                      ply_from_root + 1, thread, tm, stats,
+                                      true, /*cutNode=*/!cutNode, move, ss);
                 }
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats,
+                                  true, /*cutNode=*/!cutNode, move, ss);
             }
 
             if (eval > alpha && eval < beta) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats,
+                                  true, /*cutNode=*/false, move, ss);
             }
         } else {
             if (move_count == 1) {
+                // At a non-PV node [-beta,-alpha] IS the null window, so the child
+                // is still a scout child and must get !cutNode, not false.
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats,
+                                  true, /*cutNode=*/ is_pv_node ? false : !cutNode,
+                                  move, ss);
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats,
+                                  true, /*cutNode=*/!cutNode, move, ss);
 
                 if (eval > alpha && eval < beta) {
                     eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                      ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                      ply_from_root + 1, thread, tm, stats,
+                                      true, /*cutNode=*/false, move, ss);
                 }
             }
         }
@@ -1107,7 +1131,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss);
+                                      thread, &tm, stats, true, /*cutNode=*/false, move, ss);
                 } else {
                     int new_depth = depth - 1;
                     int reduction = 0;
@@ -1139,7 +1163,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     }
 
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss);
+                                      thread, &tm, stats, true, /*cutNode=*/true, move, ss);
 
                     if (reduction > 0) {
                         bool policy_protected =
@@ -1149,13 +1173,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
-                                              thread, &tm, stats, true, move, ss);
+                                              thread, &tm, stats, true, /*cutNode=*/true, move, ss);
                         }
                     }
 
                     if (eval > alpha && eval < beta) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
-                                          thread, &tm, stats, true, move, ss);
+                                          thread, &tm, stats, true, /*cutNode=*/false, move, ss);
                     }
                 }
 
