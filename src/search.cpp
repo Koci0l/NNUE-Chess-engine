@@ -1050,15 +1050,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         float rel = rootPolicy.rel[idx];
                         float sharp = rootPolicy.quiet_sharpness;
 
-                        int policy_bonus = int(1600.0f * rel * sharp);
-                        policy_bonus = std::clamp(policy_bonus, -5000, 8000);
+                        int policy_bonus = int(2500.0f * rel * sharp);
+                        policy_bonus = std::clamp(policy_bonus, -8000, 12000);
 
                         int r = rootPolicy.quiet_rank[idx];
                         int rank_bonus = 0;
 
-                        if (r == 0) rank_bonus = 6000;
-                        else if (r == 1) rank_bonus = 3500;
-                        else if (r <= 2) rank_bonus = 2000;
+                        if (r == 0) policy_bonus += int(12000 * sharp);
+                        else if (r == 1) policy_bonus += int(7000 * sharp);
+                        else if (r == 2) policy_bonus += int(4000 * sharp);
                         else if (r <= 5) rank_bonus = 900;
                         else if (r <= 10) rank_bonus = 250;
 
