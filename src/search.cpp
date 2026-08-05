@@ -766,8 +766,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         chess::Piece moved_piece = board.at(move.from());
         bool gives_check = in_check ? false : givesCheckFull(board, move);
-
-        bool gives_check = in_check ? false : givesCheckFull(board, move);
         // For promotions, the promoted piece type matters:
         if (move.typeOf() == chess::Move::PROMOTION && !in_check) {
             uint64_t to_bit = 1ULL << move.to().index();
