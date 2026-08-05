@@ -235,7 +235,7 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
     return h;
 }
 
-// Forward declaration (cutNode added)
+// Forward declaration
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss, chess::Move excluded_move,
@@ -752,7 +752,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
-        // LMR: only call givesCheck if every other reduce condition already holds
+        // LMR
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
                           new_depth > 1 && !givesCheck();
@@ -764,7 +764,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             if (!is_pv_node) reduction += 1;
             if (!improving)  reduction += 1;
-            if (cutNode)     reduction += 2;   // <-- the Elo
+            if (cutNode)     reduction += 2;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
@@ -773,47 +773,48 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
-                // reduced scout — child is a cut node
+                // Reduced LMR scout: child is ALWAYS a cut node
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), true);
+                                  chess::Move(), /*cutNode=*/true);
 
                 if (eval > alpha) {
-                    // research at full depth, still null-window — not a cut node
+                    // Re-search: flip cutNode
                     eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                       ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                      chess::Move(), false);
+                                      chess::Move(), /*cutNode=*/!cutNode);
                 }
             } else {
-                // scout — child is a cut node
+                // No reduction — normal scout: flip
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), true);
+                                  chess::Move(), /*cutNode=*/!cutNode);
             }
 
             if (eval > alpha && eval < beta) {
                 // PV research
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), false);
+                                  chess::Move(), /*cutNode=*/false);
             }
         } else {
-            if (move_count == 1 && is_pv_node) {
-                // first move at PV node: full window, child is PV
+            if (move_count == 1) {
+                // First move: full window; child cutNode = !cutNode
+                // (at non-PV this window equals null window)
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), false);
+                                  chess::Move(), /*cutNode=*/!cutNode);
             } else {
-                // scout — child is cut node
+                // Scout: flip
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), true);
+                                  chess::Move(), /*cutNode=*/!cutNode);
 
                 if (eval > alpha && eval < beta) {
                     // PV research
                     eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                       ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                      chess::Move(), false);
+                                      chess::Move(), /*cutNode=*/false);
                 }
             }
         }
@@ -1137,7 +1138,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     // first root move — full window, not a cut node
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
                                       thread, &tm, stats, true, move, ss, chess::Move(),
-                                      false);
+                                      /*cutNode=*/false);
                 } else {
                     int new_depth = depth - 1;
                     int reduction = 0;
@@ -1168,10 +1169,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
                     }
 
-                    // scout — cut node
+                    // root scout — child is cut node (root is PV => !false == true)
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
                                       thread, &tm, stats, true, move, ss, chess::Move(),
-                                      true);
+                                      /*cutNode=*/true);
 
                     if (reduction > 0) {
                         bool policy_protected =
@@ -1180,18 +1181,18 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         int verify_margin = policy_protected ? 20 : 0;
 
                         if (eval > alpha - verify_margin) {
-                            // research null-window — not a cut node
+                            // research null-window — flip (root PV => false)
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
                                               thread, &tm, stats, true, move, ss, chess::Move(),
-                                              false);
+                                              /*cutNode=*/false);
                         }
                     }
 
                     if (eval > alpha && eval < beta) {
-                        // PV research — not a cut node
+                        // PV research
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
                                           thread, &tm, stats, true, move, ss, chess::Move(),
-                                          false);
+                                          /*cutNode=*/false);
                     }
                 }
 
