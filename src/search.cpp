@@ -706,7 +706,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         // Full check detection (direct + discovered + EP + castle + promo).
         // Must run before makeMove so futility / LMR stay correct.
-        const bool gives_check = !in_check && board.givesCheck(move);
+        const bool gives_check =
+            !in_check && board.givesCheck(move) != chess::CheckType::NO_CHECK;
 
         if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
