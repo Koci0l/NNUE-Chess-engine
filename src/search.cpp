@@ -700,22 +700,26 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             se_ext = std::clamp(se.ext, -1, 3);
         }
 
-        move_count++;
+                move_count++;
 
         chess::Piece moved_piece = board.at(move.from());
 
-        // Full check detection (direct + discovered + EP + castle + promo).
-        // Must run before makeMove so futility / LMR stay correct.
-        const bool gives_check =
-            !in_check && board.givesCheck(move) != chess::CheckType::NO_CHECK;
+        int check_cache = -1; // -1 unknown, 0 no check, 1 check
+        auto givesCheck = [&]() -> bool {
+            if (in_check || !is_quiet) return false;
+            if (check_cache < 0) {
+                check_cache =
+                    (board.givesCheck(move) != chess::CheckType::NO_CHECK) ? 1 : 0;
+            }
+            return check_cache == 1;
+        };
 
-        if (!in_singular_search && !is_pv_node && !in_check && !gives_check &&
+        // Futility: only pay for givesCheck after the margin test hits
+        if (!in_singular_search && !is_pv_node && !in_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = FUTILITY_BASE_MARGIN + FUTILITY_PER_DEPTH_MARGIN * depth;
-            if (static_eval + futility_margin <= alpha) {
-                // Pruned — no makeMove, no accumulator update needed.
-                // Still track for history malus:
+            if (static_eval + futility_margin <= alpha && !givesCheck()) {
                 if (quiets_count < MAX_QUIETS_TRACKED)
                     quiets_searched[quiets_count++] = move;
                 continue;
@@ -734,9 +738,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
+        // LMR: only call givesCheck if every other reduce condition already holds
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
-                          depth >= 3 && !gives_check && !in_singular_search &&
-                          new_depth > 1;
+                          depth >= 3 && !in_singular_search &&
+                          new_depth > 1 && !givesCheck();
 
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
