@@ -379,19 +379,106 @@ static inline CheckSquares computeCheckSquares(const chess::Board& board) {
     return cs;
 }
 
-static inline bool moveGivesCheck(const chess::Board& board, const chess::Move& move,
-                                  const CheckSquares& cs) {
-    chess::Piece moved = board.at(move.from());
-    uint64_t to_bit = 1ULL << move.to().index();
+static inline bool givesCheckFull(const chess::Board& board, const chess::Move& move)
+{
+    using namespace chess;
 
-    switch (static_cast<int>(moved.type())) {
-        case 0: return (cs.pawn & to_bit) != 0;     // PAWN
-        case 1: return (cs.knight & to_bit) != 0;   // KNIGHT
-        case 2: return (cs.bishop & to_bit) != 0;   // BISHOP
-        case 3: return (cs.rook & to_bit) != 0;     // ROOK
-        case 4: return (cs.queen & to_bit) != 0;    // QUEEN
-        default: return false;                       // KING never "gives check" this way
+    Color us = board.sideToMove();
+    Color them = ~us;
+    Square ek = board.kingSq(them);
+
+    uint64_t occ = board.occ().getBits();
+
+    uint64_t pawns   = board.pieces(PieceType::PAWN,   us).getBits();
+    uint64_t knights = board.pieces(PieceType::KNIGHT, us).getBits();
+    uint64_t bishops = board.pieces(PieceType::BISHOP, us).getBits();
+    uint64_t rooks   = board.pieces(PieceType::ROOK,   us).getBits();
+    uint64_t queens  = board.pieces(PieceType::QUEEN,  us).getBits();
+    uint64_t kings   = board.pieces(PieceType::KING,   us).getBits();
+
+    auto relocate = [&](uint64_t& bb, Square from, Square to) {
+        bb &= ~(1ULL << from.index());
+        bb |=  (1ULL << to.index());
+    };
+
+    if (move.typeOf() == Move::CASTLING)
+    {
+        Square king_from = move.from();
+        Square rook_from = move.to();
+        bool king_side = rook_from > king_from;
+
+        Square king_to = Square::castling_king_square(king_side, us);
+        Square rook_to = Square::castling_rook_square(king_side, us);
+
+        occ &= ~(1ULL << king_from.index());
+        occ &= ~(1ULL << rook_from.index());
+        occ |=  (1ULL << king_to.index());
+        occ |=  (1ULL << rook_to.index());
+
+        relocate(kings, king_from, king_to);
+        relocate(rooks, rook_from, rook_to);
     }
+    else
+    {
+        Square from = move.from();
+        Square to = move.to();
+
+        Piece moved = board.at(from);
+        PieceType pt = moved.type();
+
+        occ &= ~(1ULL << from.index());
+        occ |=  (1ULL << to.index());
+
+        if (move.typeOf() == Move::ENPASSANT)
+        {
+            Square cap(to.file(), from.rank());
+            occ &= ~(1ULL << cap.index());
+        }
+
+        if (move.typeOf() == Move::PROMOTION)
+        {
+            pawns &= ~(1ULL << from.index());
+
+            PieceType promo = move.promotionType();
+
+            if      (promo == PieceType::KNIGHT) knights |= (1ULL << to.index());
+            else if (promo == PieceType::BISHOP) bishops |= (1ULL << to.index());
+            else if (promo == PieceType::ROOK)   rooks   |= (1ULL << to.index());
+            else if (promo == PieceType::QUEEN)  queens  |= (1ULL << to.index());
+        }
+        else
+        {
+            if      (pt == PieceType::PAWN)   relocate(pawns,   from, to);
+            else if (pt == PieceType::KNIGHT) relocate(knights, from, to);
+            else if (pt == PieceType::BISHOP) relocate(bishops, from, to);
+            else if (pt == PieceType::ROOK)   relocate(rooks,   from, to);
+            else if (pt == PieceType::QUEEN)  relocate(queens,  from, to);
+            else if (pt == PieceType::KING)   relocate(kings,   from, to);
+        }
+    }
+
+    // Slider checks: also catches discovered checks.
+    uint64_t bishop_like = bishops | queens;
+    if (bishop_like && (chess::attacks::bishop(ek, occ).getBits() & bishop_like))
+        return true;
+
+    uint64_t rook_like = rooks | queens;
+    if (rook_like && (chess::attacks::rook(ek, occ).getBits() & rook_like))
+        return true;
+
+    // Knight checks.
+    if (knights && (chess::attacks::knight(ek).getBits() & knights))
+        return true;
+
+    // Pawn checks.
+    // Squares where our pawns would attack the enemy king.
+    if (pawns && (chess::attacks::pawn(them, ek).getBits() & pawns))
+        return true;
+
+    // Direct king contact is normally illegal, but including it is harmless.
+    // if (kings && (chess::attacks::king(ek).getBits() & kings)) return true;
+
+    return false;
 }
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
@@ -678,6 +765,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         move_count++;
 
         chess::Piece moved_piece = board.at(move.from());
+        bool gives_check = in_check ? false : givesCheckFull(board, move);
 
         bool gives_check = in_check ? false : moveGivesCheck(board, move, check_sq);
         // For promotions, the promoted piece type matters:
