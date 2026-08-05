@@ -1000,6 +1000,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     return 3000000;
                 }
 
+                if (rootPolicy.ok &&
+                    rootPolicy.top_any != chess::Move() &&
+                    move == rootPolicy.top_any) {
+                    is_quiet_out = isQuietMove(board, move);
+                    return 2900000;
+                }
+
                 bool is_capture = board.at(move.to()) != chess::Piece::NONE ||
                                   move.typeOf() == chess::Move::ENPASSANT;
                 bool is_promo = move.typeOf() == chess::Move::PROMOTION;
