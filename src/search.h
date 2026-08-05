@@ -14,7 +14,8 @@ int quiescence(chess::Board& board, int alpha, int beta,
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss,
-              chess::Move excluded_move = chess::Move());
+              chess::Move excluded_move = chess::Move(),
+              bool cutNode = true);
               
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
                    int64_t node_limit = 0, int* score_out = nullptr, uint64_t* nodes_out = nullptr);
