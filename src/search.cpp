@@ -876,7 +876,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
         } else {
-            int bonus = 8 * depth * depth;
+            int bonus = std::min(800, 8 * depth * depth);
             CaptureSearchInfo ci;
             if (extractCaptureInfo(board, best_move, ci))
                 g_captureHistory.update(ci.piece_type, ci.to_sq, ci.captured_type, bonus);
