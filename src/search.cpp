@@ -522,7 +522,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     // Null move pruning
     if (allow_null && !in_check && !is_pv_node && !in_singular_search &&
         depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta) {
-        int R = 3 + depth / 3 + (improving ? 1 : 0);
+        int eval_reduction = std::min(3, (static_eval - beta) / 200);
+        int R = 3 + depth / 3 + (improving ? 1 : 0) + eval_reduction;
         R = std::min(R, depth - 1);
 
         AccumulatorPair saved_acc = thread.accumulatorStack.current();
