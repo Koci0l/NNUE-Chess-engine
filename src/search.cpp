@@ -752,6 +752,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+            
+            if (static_eval < alpha - 50) {
+                reduction += 1;
+            }
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
