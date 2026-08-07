@@ -803,7 +803,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 g_killerMoves.store(ply_from_root, move);
                 g_counterMoves.update(previous_move, move);
 
-                int bonus = 32 * depth * depth;
+                int bonus = std::min(1600, 32 * depth * depth);
                 g_butterflyHistory.update(side_to_move, move.from(), move.to(), bonus);
 
                 chess::Piece cut_piece = board.at(move.from());
@@ -817,14 +817,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                     updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -bonus / 2);
                 }
             } else {
-                int bonus = 32 * depth * depth;
+                int bonus = std::min(1600, 32 * depth * depth);
                 CaptureSearchInfo ci;
                 if (extractCaptureInfo(board, move, ci))
                     g_captureHistory.update(ci.piece_type, ci.to_sq, ci.captured_type, bonus);
             }
 
             {
-                int malus = 32 * depth * depth;
+                int malus = std::min(1600, 32 * depth * depth);
                 for (int c = 0; c < captures_count; ++c) {
                     g_captureHistory.update(captures_searched[c].piece_type,
                                             captures_searched[c].to_sq,
@@ -860,7 +860,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     // PV-node history bonus
     if (best_score > original_alpha && best_move != chess::Move()) {
         if (isQuietMove(board, best_move)) {
-            int bonus = 8 * depth * depth;
+            int bonus = std::min(800, 8 * depth * depth);
             g_butterflyHistory.update(side_to_move, best_move.from(), best_move.to(), bonus);
 
             chess::Piece pv_piece = board.at(best_move.from());
@@ -876,14 +876,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
         } else {
-            int bonus = 8 * depth * depth;
+            int bonus = std::min(800, 8 * depth * depth);
             CaptureSearchInfo ci;
             if (extractCaptureInfo(board, best_move, ci))
                 g_captureHistory.update(ci.piece_type, ci.to_sq, ci.captured_type, bonus);
         }
 
         {
-            int malus = 8 * depth * depth;
+            int malus = std::min(800, 8 * depth * depth);
             for (int c = 0; c < captures_count; ++c) {
                 if (captures_searched[c].move != best_move) {
                     g_captureHistory.update(captures_searched[c].piece_type,
