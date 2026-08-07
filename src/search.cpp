@@ -560,19 +560,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (tt_gate) {
             int probcut_depth = depth - PROBCUT_DEPTH_SUBTRACTOR;
 
-            chess::Movelist all_moves;
-            chess::movegen::legalmoves(all_moves, board);
+            chess::Movelist tactical_moves;
+            chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(tactical_moves, board);
 
             struct ProbCutMove { chess::Move mv; int score; };
             std::vector<ProbCutMove> probcut_moves;
-            probcut_moves.reserve(all_moves.size());
+            probcut_moves.reserve(tactical_moves.size());
 
-            for (const auto& mv : all_moves) {
-                bool is_capture = board.at(mv.to()) != chess::Piece::NONE ||
-                                  mv.typeOf() == chess::Move::ENPASSANT;
-                bool is_promotion = mv.typeOf() == chess::Move::PROMOTION;
-
-                if (!is_capture && !is_promotion) continue;
+            for (const auto& mv : tactical_moves) {
                 if (!chess::see::see_ge(board, mv, PROBCUT_SEE_THRESHOLD)) continue;
 
                 int victim = 0;
