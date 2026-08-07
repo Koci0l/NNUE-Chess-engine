@@ -755,6 +755,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
+            if (tt_hit && tt_depth >= depth) reduction -= 1;
+
             if (reduction > 0) {
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss);
