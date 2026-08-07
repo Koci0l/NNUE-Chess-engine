@@ -198,17 +198,27 @@ struct SEResult {
 
 static inline void updateContHist(int ply_from_root, const SearchStack* ss,
                                   chess::Piece piece, chess::Square to, int bonus) {
-    if (ply_from_root >= 1 &&
-        ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
+    if (ply_from_root >= 1 && ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
         g_contHist1ply.update(ss[ply_from_root - 1].moved_piece,
                               ss[ply_from_root - 1].current_move.to(),
                               piece, to, bonus);
     }
 
-    if (ply_from_root >= 2 &&
-        ss[ply_from_root - 2].moved_piece != chess::Piece::NONE) {
+    if (ply_from_root >= 2 && ss[ply_from_root - 2].moved_piece != chess::Piece::NONE) {
         g_contHist2ply.update(ss[ply_from_root - 2].moved_piece,
                               ss[ply_from_root - 2].current_move.to(),
+                              piece, to, bonus);
+    }
+
+    if (ply_from_root >= 3 && ss[ply_from_root - 3].moved_piece != chess::Piece::NONE) {
+        g_contHist3ply.update(ss[ply_from_root - 3].moved_piece,
+                              ss[ply_from_root - 3].current_move.to(),
+                              piece, to, bonus);
+    }
+
+    if (ply_from_root >= 4 && ss[ply_from_root - 4].moved_piece != chess::Piece::NONE) {
+        g_contHist4ply.update(ss[ply_from_root - 4].moved_piece,
+                              ss[ply_from_root - 4].current_move.to(),
                               piece, to, bonus);
     }
 }
@@ -218,17 +228,27 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
                                   const SearchStack* ss) {
     int h = g_butterflyHistory.get(side, move.from(), move.to());
 
-    if (ply_from_root >= 1 &&
-        ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
+    if (ply_from_root >= 1 && ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
         h += g_contHist1ply.get(ss[ply_from_root - 1].moved_piece,
                                 ss[ply_from_root - 1].current_move.to(),
                                 piece, move.to());
     }
 
-    if (ply_from_root >= 2 &&
-        ss[ply_from_root - 2].moved_piece != chess::Piece::NONE) {
+    if (ply_from_root >= 2 && ss[ply_from_root - 2].moved_piece != chess::Piece::NONE) {
         h += g_contHist2ply.get(ss[ply_from_root - 2].moved_piece,
                                 ss[ply_from_root - 2].current_move.to(),
+                                piece, move.to());
+    }
+
+    if (ply_from_root >= 3 && ss[ply_from_root - 3].moved_piece != chess::Piece::NONE) {
+        h += g_contHist3ply.get(ss[ply_from_root - 3].moved_piece,
+                                ss[ply_from_root - 3].current_move.to(),
+                                piece, move.to());
+    }
+
+    if (ply_from_root >= 4 && ss[ply_from_root - 4].moved_piece != chess::Piece::NONE) {
+        h += g_contHist4ply.get(ss[ply_from_root - 4].moved_piece,
+                                ss[ply_from_root - 4].current_move.to(),
                                 piece, move.to());
     }
 

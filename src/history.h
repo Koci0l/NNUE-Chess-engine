@@ -181,6 +181,8 @@ extern CounterMoveHistory g_counterMoves;
 extern CaptureHistory g_captureHistory;
 extern ContinuationHistory g_contHist1ply;
 extern ContinuationHistory g_contHist2ply;
+extern ContinuationHistory g_contHist3ply;
+extern ContinuationHistory g_contHist4ply;
 extern CorrectionHistory g_correctionHistory;
 extern CorrectionHistory g_pawnCorrectionHistory;
 extern CorrectionHistory g_materialCorrectionHistory;

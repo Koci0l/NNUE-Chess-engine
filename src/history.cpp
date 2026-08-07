@@ -6,6 +6,8 @@ CounterMoveHistory g_counterMoves;
 CaptureHistory g_captureHistory;
 ContinuationHistory g_contHist1ply;
 ContinuationHistory g_contHist2ply;
+ContinuationHistory g_contHist3ply;
+ContinuationHistory g_contHist4ply;
 CorrectionHistory g_correctionHistory;
 CorrectionHistory g_pawnCorrectionHistory;
 CorrectionHistory g_materialCorrectionHistory;
