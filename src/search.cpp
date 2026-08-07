@@ -568,6 +568,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             probcut_moves.reserve(tactical_moves.size());
 
             for (const auto& mv : tactical_moves) {
+                bool is_promotion = mv.typeOf() == chess::Move::PROMOTION;
+
                 if (!chess::see::see_ge(board, mv, PROBCUT_SEE_THRESHOLD)) continue;
 
                 int victim = 0;
