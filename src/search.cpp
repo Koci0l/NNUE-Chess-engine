@@ -736,7 +736,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int new_depth = depth + local_extension - 1;
 
         // LMR: only call givesCheck if every other reduce condition already holds
-        bool can_reduce = !in_check && is_quiet && move_count > 1 &&
+        bool can_reduce = !in_check && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
                           new_depth > 1 && !givesCheck();
 
@@ -752,6 +752,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
+
+            if (!is_quiet) {
+                reduction /= 2;                  // Halve the reduction for captures
+                if (move_count <= 3) reduction = 0; // Never reduce the first 3 (good) captures
+            }
 
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
