@@ -681,10 +681,19 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
 
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
-            is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
-            move_count >= 3 + depth * depth) {
-            mp.skipQuiets();
-            continue;  // loop will now yield bad captures (or DONE)
+            is_quiet && move != tt_move && best_score > -MATE_SCORE + 100) {
+            
+            chess::Piece current_piece = board.at(move.from());
+            int history = getCombinedHist(side_to_move, move, current_piece, ply_from_root, ss);
+            
+            int lmp_threshold = 3 + depth * depth;
+            
+            lmp_threshold += history / 1024; 
+            
+            if (move_count >= lmp_threshold) {
+                mp.skipQuiets();
+                continue;
+            }
         }
 
         // Singular extension
@@ -752,7 +761,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
-
+            
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
