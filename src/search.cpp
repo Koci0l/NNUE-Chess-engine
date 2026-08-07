@@ -736,6 +736,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         int eval;
         int local_extension = extension + se_ext;
+
+        if (givesCheck() && !in_check) {
+            local_extension += 1;
+        }
+
         int new_depth = depth + local_extension - 1;
 
         // LMR: only call givesCheck if every other reduce condition already holds
@@ -752,6 +757,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (!is_pv_node) reduction += 1;
             if (!improving) reduction += 1;
 
+            // History-based LMR
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
