@@ -713,12 +713,28 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         // Futility: only pay for givesCheck after the margin test hits
         if (!in_singular_search && !is_pv_node && !in_check &&
-            depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
+            depth <= 7 && is_quiet && move != tt_move &&
+            best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
-            int futility_margin = FUTILITY_BASE_MARGIN + FUTILITY_PER_DEPTH_MARGIN * depth;
-            if (static_eval + futility_margin <= alpha && !givesCheck()) {
+
+            int move_history = getCombinedHist(
+                side_to_move,
+                move,
+                moved_piece,
+                ply_from_root,
+                ss
+            );
+
+            int fp_margin = static_eval
+                        + FUTILITY_BASE_MARGIN
+                        + FUTILITY_PER_DEPTH_MARGIN * depth;
+
+            fp_margin += move_history / 16;
+
+            if (fp_margin <= alpha && !givesCheck()) {
                 if (quiets_count < MAX_QUIETS_TRACKED)
                     quiets_searched[quiets_count++] = move;
+
                 continue;
             }
         }
