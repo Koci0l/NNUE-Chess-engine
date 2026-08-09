@@ -729,7 +729,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                         + FUTILITY_BASE_MARGIN
                         + FUTILITY_PER_DEPTH_MARGIN * depth;
 
-            fp_margin += move_history / 16;
+            fp_margin += std::clamp(move_history / 64, -60, 60);
 
             if (fp_margin <= alpha && !givesCheck()) {
                 if (quiets_count < MAX_QUIETS_TRACKED)
