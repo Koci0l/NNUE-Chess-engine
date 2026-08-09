@@ -13,6 +13,7 @@
 #include <chrono>
 
 bool g_silent = false;
+
 static int lmr_reductions[64][64];
 
 // Rounded tuned values
@@ -66,10 +67,6 @@ inline int scaleNNUE(int raw_score) {
 static inline uint64_t getPawnKey(const chess::Board& board) {
     uint64_t wp = board.pieces(chess::PieceType::PAWN, chess::Color::WHITE).getBits();
     uint64_t bp = board.pieces(chess::PieceType::PAWN, chess::Color::BLACK).getBits();
-<<<<<<< Updated upstream
-
-=======
->>>>>>> Stashed changes
     uint64_t h = wp * 0x9E3779B97F4A7C15ULL;
     h ^= bp * 0x517CC1B727220A95ULL;
     h ^= h >> 32;
@@ -140,38 +137,22 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
         chess::Piece piece = board.at(move.from());
         chess::Piece captured = board.at(move.to());
         if (captured != chess::Piece::NONE)
-<<<<<<< Updated upstream
-            accStack.current().remove_piece(captured, move.to());
-        accStack.current().move_piece(piece, move.from(), move.to());
-=======
             accStack.current().remove_piece(captured, move.to(), skip_white, skip_black);
         accStack.current().move_piece(piece, move.from(), move.to(), skip_white, skip_black);
->>>>>>> Stashed changes
     } else if (moveType == chess::Move::PROMOTION) {
         chess::Piece pawn = board.at(move.from());
         chess::Piece captured = board.at(move.to());
         chess::Piece promotedPiece = chess::Piece(move.promotionType(), pawn.color());
         if (captured != chess::Piece::NONE)
-<<<<<<< Updated upstream
-            accStack.current().remove_piece(captured, move.to());
-        accStack.current().remove_piece(pawn, move.from());
-        accStack.current().add_piece(promotedPiece, move.to());
-=======
             accStack.current().remove_piece(captured, move.to(), skip_white, skip_black);
         accStack.current().remove_piece(pawn, move.from(), skip_white, skip_black);
         accStack.current().add_piece(promotedPiece, move.to(), skip_white, skip_black);
->>>>>>> Stashed changes
     } else if (moveType == chess::Move::ENPASSANT) {
         chess::Piece pawn = board.at(move.from());
         chess::Square capturedPawnSq(move.to().file(), move.from().rank());
         chess::Piece capturedPawn = board.at(capturedPawnSq);
-<<<<<<< Updated upstream
-        accStack.current().remove_piece(capturedPawn, capturedPawnSq);
-        accStack.current().move_piece(pawn, move.from(), move.to());
-=======
         accStack.current().remove_piece(capturedPawn, capturedPawnSq, skip_white, skip_black);
         accStack.current().move_piece(pawn, move.from(), move.to(), skip_white, skip_black);
->>>>>>> Stashed changes
     } else if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
         chess::Square rook_from = move.to();
@@ -188,38 +169,6 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
     }
 }
 
-<<<<<<< Updated upstream
-// ==========================================================================================
-// Input Bucket Refresh Helper (Accounts for Castling encoding in chess.hpp)
-// ==========================================================================================
-static inline void makeMoveAndUpdateAccumulator(chess::Board& board, const chess::Move& move, AccumulatorStack& accStack) {
-    chess::Piece moved_piece = board.at(move.from());
-    bool needs_refresh = false;
-    
-    if (moved_piece.type() == chess::PieceType::KING) {
-        chess::Square king_to_sq = move.to();
-        // chess.hpp encodes castling as King captures Rook, so we must resolve the true destination
-        if (move.typeOf() == chess::Move::CASTLING) {
-            bool king_side = move.to() > move.from();
-            king_to_sq = chess::Square::castling_king_square(king_side, moved_piece.color());
-        }
-        
-        auto old_info = NNUE::getInputBucketInfo(move.from());
-        auto new_info = NNUE::getInputBucketInfo(king_to_sq);
-        if (old_info.bucket != new_info.bucket || old_info.flip != new_info.flip) {
-            needs_refresh = true;
-        }
-    }
-    
-    accStack.push();
-    if (needs_refresh) {
-        board.makeMove(move);
-        accStack.current().resetAccumulators(board);
-    } else {
-        updateAccumulatorForMove(accStack, board, move);
-        board.makeMove(move);
-    }
-=======
 // Added helper wrapper to handle conditional refreshes cleanly
 void makeMoveAndUpdateAccumulator(ThreadInfo& thread, chess::Board& board, const chess::Move& move) {
     thread.accumulatorStack.push();
@@ -250,7 +199,6 @@ void makeMoveAndUpdateAccumulator(ThreadInfo& thread, chess::Board& board, const
     // Do a full refresh if the king changed buckets
     if (refresh_white) thread.accumulatorStack.current().refresh_white(board);
     if (refresh_black) thread.accumulatorStack.current().refresh_black(board);
->>>>>>> Stashed changes
 }
 
 struct SEResult {
@@ -326,19 +274,13 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
         out.ext = ext;
         return out;
     }
-<<<<<<< Updated upstream
-=======
     
->>>>>>> Stashed changes
     if (singular_beta >= beta) {
         out.multicut = true;
         out.mcScore = singular_beta;
         return out;
     }
-<<<<<<< Updated upstream
-=======
     
->>>>>>> Stashed changes
     if (tt_score >= beta) out.ext = -1;
     return out;
 }
@@ -380,11 +322,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
         
     bool in_check = board.inCheck();
     uint64_t hash = getZobristHash(board);
-<<<<<<< Updated upstream
-
-=======
     
->>>>>>> Stashed changes
     TTEntry te;
     chess::Move tt_move = chess::Move();
     bool tt_hit = peekTT(hash, te);
@@ -429,15 +367,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
                            
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
             continue;
-<<<<<<< Updated upstream
-
-        makeMoveAndUpdateAccumulator(board, move, thread.accumulatorStack);
-
-=======
             
         makeMoveAndUpdateAccumulator(thread, board, move);
         
->>>>>>> Stashed changes
         int eval = -quiescence(board, -beta, -alpha, thread, ply_from_root + 1, stats);
         
         board.unmakeMove(move);
@@ -629,15 +561,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                       
             for (size_t i = 0; i < std::min(probcut_moves.size(), size_t(PROBCUT_MAX_MOVES)); ++i) {
                 const auto& move = probcut_moves[i].mv;
-<<<<<<< Updated upstream
-
-                makeMoveAndUpdateAccumulator(board, move, thread.accumulatorStack);
-
-=======
                 
                 makeMoveAndUpdateAccumulator(thread, board, move);
                 
->>>>>>> Stashed changes
                 int probcut_value = -quiescence(board, -probcut_beta, -probcut_beta + 1,
                                                 thread, ply_from_root + 1, stats);
                                                 
@@ -682,10 +608,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int quiets_count = 0;
     CaptureSearchInfo captures_searched[MAX_CAPTURES_TRACKED];
     int captures_count = 0;
-<<<<<<< Updated upstream
-=======
     
->>>>>>> Stashed changes
     int move_count = 0;
     bool had_non_excluded_move = false;
     
@@ -694,11 +617,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         chess::Move move = mp.next(is_quiet);
         if (move == chess::Move()) break;
         if (move == excluded_move) continue;
-<<<<<<< Updated upstream
-
-=======
         
->>>>>>> Stashed changes
         had_non_excluded_move = true;
         bool is_noisy = !is_quiet;
         
@@ -741,11 +660,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (se.multicut) return se.mcScore;
             se_ext = std::clamp(se.ext, -1, 3);
         }
-<<<<<<< Updated upstream
-
-=======
         
->>>>>>> Stashed changes
         move_count++;
         chess::Piece moved_piece = board.at(move.from());
         
@@ -772,13 +687,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
         
         // Now actually make the move
-<<<<<<< Updated upstream
-        makeMoveAndUpdateAccumulator(board, move, thread.accumulatorStack);
-
-=======
         makeMoveAndUpdateAccumulator(thread, board, move);
         
->>>>>>> Stashed changes
         ss[ply_from_root].current_move = move;
         ss[ply_from_root].moved_piece = moved_piece;
         
@@ -965,10 +875,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     computeRootPolicy(board, rootPolicy);
     chess::Move best_move =
         (rootPolicy.ok && rootPolicy.top_any != chess::Move()) ? rootPolicy.top_any : moves[0];
-<<<<<<< Updated upstream
-=======
         
->>>>>>> Stashed changes
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
     const bool root_in_check = board.inCheck();
@@ -1046,17 +953,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     if (captured_piece != chess::Piece::NONE)
                         victim = pieceValue(captured_piece.type());
                     int attacker = pieceValue(attacker_piece.type());
-<<<<<<< Updated upstream
-
-=======
->>>>>>> Stashed changes
                     int tactical = victim * 10 - attacker;
                     if (is_promo) tactical += 600000 + pieceValue(move.promotionType());
                     if (captured_piece != chess::Piece::NONE) {
                         tactical += g_captureHistory.get(
-                                        static_cast<int>(attacker_piece.type()),
-                                        move.to().index(),
-                                        static_cast<int>(captured_piece.type())) / 16;
+                            static_cast<int>(attacker_piece.type()),
+                            move.to().index(),
+                            static_cast<int>(captured_piece.type())) / 16;
                     }
                     if (chess::see::see_ge(board, move, 0))
                         return 2000000 + tactical;
@@ -1107,27 +1010,16 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (tm.should_stop()) goto search_done;
                 
                 chess::Piece root_piece = board.at(move.from());
-<<<<<<< Updated upstream
-
-                makeMoveAndUpdateAccumulator(board, move, thread.accumulatorStack);
-
-                ss[0].current_move = move;
-                ss[0].moved_piece = root_piece;
-=======
                 
                 makeMoveAndUpdateAccumulator(thread, board, move);
                 
                 ss[0].current_move = move;
                 ss[0].moved_piece = root_piece;
                 
->>>>>>> Stashed changes
                 bool gives_check = board.inCheck();
                 int eval;
                 bool is_draw_move = isDrawByRepetition(board) || isDrawByFiftyMove(board);
-<<<<<<< Updated upstream
-=======
                 
->>>>>>> Stashed changes
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
@@ -1143,12 +1035,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     if (can_reduce_root) {
                         int move_no = root_move_count + 1;
                         reduction = lmr_reductions[std::min(depth, 63)]
-<<<<<<< Updated upstream
-                                                  [std::min(move_no, 63)];
-
-=======
                                               [std::min(move_no, 63)];
->>>>>>> Stashed changes
                         if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
@@ -1271,11 +1158,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             float pol_p = rootPolicy.top_prob_any;
             float pol_ent = rootPolicy.entropy_any;
             double scale = 1.0;
-<<<<<<< Updated upstream
-
-=======
             
->>>>>>> Stashed changes
             const bool disagree = (pol_top != best_move);
             if (disagree) {
                 scale = POLICY_TM_DISAGREE;

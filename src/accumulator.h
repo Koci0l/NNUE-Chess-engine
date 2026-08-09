@@ -21,12 +21,6 @@ namespace chess {
 class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
-<<<<<<< Updated upstream
-    usize bucket = 0;
-    int flip = 0;
-
-=======
->>>>>>> Stashed changes
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -38,12 +32,6 @@ struct AccumulatorPair {
     int black_bucket = -1; // Added
 
     void resetAccumulators(const chess::Board& board);
-<<<<<<< Updated upstream
-    void add_piece(const chess::Piece& p, const chess::Square& sq);
-    void remove_piece(const chess::Piece& p, const chess::Square& sq);
-    void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
-    
-=======
     void refresh_white(const chess::Board& board); // Added
     void refresh_black(const chess::Board& board); // Added
 
@@ -51,7 +39,6 @@ struct AccumulatorPair {
     void remove_piece(const chess::Piece& p, const chess::Square& sq, bool skip_white = false, bool skip_black = false);
     void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to, bool skip_white = false, bool skip_black = false);
 
->>>>>>> Stashed changes
     bool operator==(const AccumulatorPair& other) const {
         return std::memcmp(this, &other, sizeof(AccumulatorPair)) == 0;
     }
