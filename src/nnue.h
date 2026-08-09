@@ -4,7 +4,6 @@
 #include "chess.hpp"
 #include <array>
 #include <string>
-
 // Include types.h for ThreadInfo
 #include "types.h"
 
@@ -22,8 +21,8 @@ struct InputBucketInfo {
 };
 
 struct NNUE {
-    // Weights and biases
-    alignas(NN_ALIGNMENT) std::array<i16, INPUT_SIZE * HL_SIZE> weightsToHL;
+    // Weights and biases (expanded weightsToHL for input buckets)
+    alignas(NN_ALIGNMENT) std::array<i16, INPUT_SIZE * HL_SIZE * NUM_INPUT_BUCKETS> weightsToHL;
     alignas(NN_ALIGNMENT) std::array<i16, HL_SIZE> hiddenLayerBias;
     alignas(NN_ALIGNMENT) std::array<std::array<i16, 2 * HL_SIZE>, OUTPUT_BUCKETS> weightsToOut;
     std::array<i16, OUTPUT_BUCKETS> outputBias;
@@ -31,6 +30,7 @@ struct NNUE {
     static i16 ReLU(const i16 x);
     static i16 CReLU(const i16 x);
     static i32 SCReLU(const i16 x);
+<<<<<<< Updated upstream
     
     i32 vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
     
@@ -39,10 +39,15 @@ struct NNUE {
     
     static usize getMaterialBucket(const chess::Board& board);
     
+=======
+    i32 vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
+    static usize feature(chess::Color perspective, chess::Color color, chess::PieceType piece, chess::Square square);
+    static int get_input_bucket(chess::Color perspective, chess::Square king_sq); // Added
+    static usize getMaterialBucket(const chess::Board& board);
+>>>>>>> Stashed changes
     void loadNetwork(const std::string& filepath);
     int forwardPass(const chess::Board* board, const AccumulatorPair& accumulators);
     static i16 evaluate(const chess::Board& board, ThreadInfo& thisThread);
-    
     void debugNetwork(const chess::Board& board, const AccumulatorPair& accumulators);
     void debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
     void showBuckets(const chess::Board* board, const AccumulatorPair& accumulators);

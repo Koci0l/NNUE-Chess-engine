@@ -16,6 +16,7 @@ constexpr i16   QA             = 255;
 constexpr i16   QB             = 64;
 constexpr int   EVAL_SCALE     = 400;
 constexpr usize OUTPUT_BUCKETS = 8;
+constexpr usize NUM_INPUT_BUCKETS = 4; // Added for ChessBucketsMirrored
 
 // ============================================================================
 // Input Buckets Configuration (Mirrored)

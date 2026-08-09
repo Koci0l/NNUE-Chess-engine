@@ -10,6 +10,143 @@
 
 NNUE g_nnue;
 
+// Bucket layout for ChessBucketsMirrored (Files A-D mirrored to H-E)
+constexpr int BUCKET_LAYOUT[32] = {
+    0, 0, 1, 1,
+    2, 2, 2, 2,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+    3, 3, 3, 3,
+};
+
+// ============================================================================
+// Bucket & Feature Calculation
+// ============================================================================
+int NNUE::get_input_bucket(chess::Color perspective, chess::Square king_sq) {
+    int sq = king_sq.index();
+    if (perspective == chess::Color::BLACK) {
+        sq ^= 56; // flip rank for black's perspective
+    }
+    int rank = sq / 8;
+    int file = sq % 8;
+    if (file >= 4) {
+        file = 7 - file; // mirror file (left/right symmetry)
+    }
+    return BUCKET_LAYOUT[rank * 4 + file];
+}
+
+usize NNUE::feature(chess::Color perspective, chess::Color color, chess::PieceType piece, chess::Square square) {
+    const int colorIndex = (perspective == color) ? 0 : 1;
+    const int squareIndex = (perspective == chess::Color::BLACK) ? (square ^ 56).index() : square.index();
+    return colorIndex * 384 + static_cast<int>(piece) * 64 + squareIndex;
+}
+
+usize NNUE::getMaterialBucket(const chess::Board& board) {
+    constexpr usize divisor = 32 / OUTPUT_BUCKETS;
+    const int pieceCount = board.occ().count();
+    return static_cast<usize>((pieceCount - 2) / divisor);
+}
+
+// ============================================================================
+// Accumulator Updates (with Bucket Indexing)
+// ============================================================================
+void AccumulatorPair::add_piece(const chess::Piece& p, const chess::Square& sq, bool skip_white, bool skip_black) {
+    if (p == chess::Piece::NONE) return;
+    const usize featureW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), sq);
+    const usize featureB = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), sq);
+    const usize offsetW = white_bucket * INPUT_SIZE * HL_SIZE + featureW * HL_SIZE;
+    const usize offsetB = black_bucket * INPUT_SIZE * HL_SIZE + featureB * HL_SIZE;
+    for (usize i = 0; i < HL_SIZE; ++i) {
+        if (!skip_white) white.values[i] += g_nnue.weightsToHL[offsetW + i];
+        if (!skip_black) black.values[i] += g_nnue.weightsToHL[offsetB + i];
+    }
+}
+
+void AccumulatorPair::remove_piece(const chess::Piece& p, const chess::Square& sq, bool skip_white, bool skip_black) {
+    if (p == chess::Piece::NONE) return;
+    const usize featureW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), sq);
+    const usize featureB = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), sq);
+    const usize offsetW = white_bucket * INPUT_SIZE * HL_SIZE + featureW * HL_SIZE;
+    const usize offsetB = black_bucket * INPUT_SIZE * HL_SIZE + featureB * HL_SIZE;
+    for (usize i = 0; i < HL_SIZE; ++i) {
+        if (!skip_white) white.values[i] -= g_nnue.weightsToHL[offsetW + i];
+        if (!skip_black) black.values[i] -= g_nnue.weightsToHL[offsetB + i];
+    }
+}
+
+void AccumulatorPair::move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to, bool skip_white, bool skip_black) {
+    if (p == chess::Piece::NONE) return;
+    const usize featureFromW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), from);
+    const usize featureFromB = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), from);
+    const usize featureToW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), to);
+    const usize featureToB = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), to);
+    
+    const usize offsetFromW = white_bucket * INPUT_SIZE * HL_SIZE + featureFromW * HL_SIZE;
+    const usize offsetToW = white_bucket * INPUT_SIZE * HL_SIZE + featureToW * HL_SIZE;
+    const usize offsetFromB = black_bucket * INPUT_SIZE * HL_SIZE + featureFromB * HL_SIZE;
+    const usize offsetToB = black_bucket * INPUT_SIZE * HL_SIZE + featureToB * HL_SIZE;
+
+    for (usize i = 0; i < HL_SIZE; ++i) {
+        if (!skip_white) white.values[i] += g_nnue.weightsToHL[offsetToW + i] - g_nnue.weightsToHL[offsetFromW + i];
+        if (!skip_black) black.values[i] += g_nnue.weightsToHL[offsetToB + i] - g_nnue.weightsToHL[offsetFromB + i];
+    }
+}
+
+void AccumulatorPair::refresh_white(const chess::Board& board) {
+    std::memcpy(white.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+    chess::Square wk_sq = board.kingSq(chess::Color::WHITE);
+    white_bucket = NNUE::get_input_bucket(chess::Color::WHITE, wk_sq);
+    for (int sq_idx = 0; sq_idx < 64; ++sq_idx) {
+        chess::Square sq(sq_idx);
+        chess::Piece p = board.at(sq);
+        if (p != chess::Piece::NONE) {
+            const usize featureW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), sq);
+            const usize offsetW = white_bucket * INPUT_SIZE * HL_SIZE + featureW * HL_SIZE;
+            for (usize i = 0; i < HL_SIZE; ++i) {
+                white.values[i] += g_nnue.weightsToHL[offsetW + i];
+            }
+        }
+    }
+}
+
+void AccumulatorPair::refresh_black(const chess::Board& board) {
+    std::memcpy(black.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+    chess::Square bk_sq = board.kingSq(chess::Color::BLACK);
+    black_bucket = NNUE::get_input_bucket(chess::Color::BLACK, bk_sq);
+    for (int sq_idx = 0; sq_idx < 64; ++sq_idx) {
+        chess::Square sq(sq_idx);
+        chess::Piece p = board.at(sq);
+        if (p != chess::Piece::NONE) {
+            const usize featureB = NNUE::feature(chess::Color::BLACK, p.color(), p.type(), sq);
+            const usize offsetB = black_bucket * INPUT_SIZE * HL_SIZE + featureB * HL_SIZE;
+            for (usize i = 0; i < HL_SIZE; ++i) {
+                black.values[i] += g_nnue.weightsToHL[offsetB + i];
+            }
+        }
+    }
+}
+
+void AccumulatorPair::resetAccumulators(const chess::Board& board) {
+    std::memcpy(white.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+    std::memcpy(black.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+    
+    chess::Square wk_sq = board.kingSq(chess::Color::WHITE);
+    chess::Square bk_sq = board.kingSq(chess::Color::BLACK);
+    white_bucket = NNUE::get_input_bucket(chess::Color::WHITE, wk_sq);
+    black_bucket = NNUE::get_input_bucket(chess::Color::BLACK, bk_sq);
+    
+    for (int sq_idx = 0; sq_idx < 64; ++sq_idx) {
+        chess::Square sq(sq_idx);
+        chess::Piece p = board.at(sq);
+        if (p != chess::Piece::NONE) {
+            add_piece(p, sq);
+        }
+    }
+}
+
 // ============================================================================
 // Activation Functions
 // ============================================================================
@@ -29,6 +166,7 @@ i32 NNUE::SCReLU(const i16 x) {
 }
 
 // ============================================================================
+<<<<<<< Updated upstream
 // Material Bucket Calculation
 // ============================================================================
 usize NNUE::getMaterialBucket(const chess::Board& board) {
@@ -54,10 +192,16 @@ InputBucketInfo NNUE::getInputBucketInfo(chess::Square ksq) {
 }
 
 // ============================================================================
+=======
+>>>>>>> Stashed changes
 // Vectorized SCReLU Forward Pass
 // ============================================================================
 #if defined(__x86_64__) || defined(__amd64__) || (defined(_WIN64) && (defined(_M_X64) || defined(_M_AMD64)))
 #include <immintrin.h>
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
 #if defined(__AVX512F__)
 #pragma message("Using AVX512 NNUE inference")
 using Vectori16 = __m512i;
@@ -119,6 +263,10 @@ inline i32 vec_reduce_epi32(Vectori32 vec) {
 i32 NNUE::vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket) {
     constexpr usize VECTOR_SIZE = sizeof(Vectori16) / sizeof(i16);
     static_assert(HL_SIZE % VECTOR_SIZE == 0, "HL_SIZE must be divisible by vector size");
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
     const Vectori16 VEC_QA = vec_set1_epi16(QA);
     const Vectori16 VEC_ZERO = vec_set1_epi16(0);
     Vectori32 accumulator = vec_setzero_epi32();
@@ -126,12 +274,25 @@ i32 NNUE::vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usiz
     for (usize i = 0; i < HL_SIZE; i += VECTOR_SIZE) {
         const Vectori16 stmValues = vec_load_epi16(&stm.values[i]);
         const Vectori16 nstmValues = vec_load_epi16(&nstm.values[i]);
+<<<<<<< Updated upstream
         const Vectori16 stmClamped = vec_min_epi16(VEC_QA, vec_max_epi16(stmValues, VEC_ZERO));
         const Vectori16 nstmClamped = vec_min_epi16(VEC_QA, vec_max_epi16(nstmValues, VEC_ZERO));
         const Vectori16 stmWeights = vec_load_epi16(&weightsToOut[bucket][i]);
         const Vectori16 nstmWeights = vec_load_epi16(&weightsToOut[bucket][i + HL_SIZE]);
         const Vectori32 stmActivated = vec_madd_epi16(stmClamped, vec_mullo_epi16(stmClamped, stmWeights));
         const Vectori32 nstmActivated = vec_madd_epi16(nstmClamped, vec_mullo_epi16(nstmClamped, nstmWeights));
+=======
+
+        const Vectori16 stmClamped = vec_min_epi16(VEC_QA, vec_max_epi16(stmValues, VEC_ZERO));
+        const Vectori16 nstmClamped = vec_min_epi16(VEC_QA, vec_max_epi16(nstmValues, VEC_ZERO));
+
+        const Vectori16 stmWeights = vec_load_epi16(&weightsToOut[bucket][i]);
+        const Vectori16 nstmWeights = vec_load_epi16(&weightsToOut[bucket][i + HL_SIZE]);
+
+        const Vectori32 stmActivated = vec_madd_epi16(stmClamped, vec_mullo_epi16(stmClamped, stmWeights));
+        const Vectori32 nstmActivated = vec_madd_epi16(nstmClamped, vec_mullo_epi16(nstmClamped, nstmWeights));
+
+>>>>>>> Stashed changes
         accumulator = vec_add_epi32(accumulator, stmActivated);
         accumulator = vec_add_epi32(accumulator, nstmActivated);
     }
@@ -150,8 +311,9 @@ i32 NNUE::vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usiz
 #endif
 
 // ============================================================================
-// Feature Index Calculation
+// Network Loading (Updated Expected Size calculation)
 // ============================================================================
+<<<<<<< Updated upstream
 usize NNUE::feature(chess::Color perspective, chess::Color color, chess::PieceType piece, chess::Square square, usize bucket, int flip) {
     const int colorIndex = (perspective == color) ? 0 : 1;
     
@@ -168,23 +330,34 @@ usize NNUE::feature(chess::Color perspective, chess::Color color, chess::PieceTy
 // ============================================================================
 // Network Loading
 // ============================================================================
+=======
+>>>>>>> Stashed changes
 void NNUE::loadNetwork(const std::string& filepath) {
     std::ifstream stream(filepath, std::ios::binary);
     if (!stream.is_open()) {
         std::cerr << "ERROR: Failed to open network file: " << filepath << std::endl;
         return;
     }
+<<<<<<< Updated upstream
 
     stream.seekg(0, std::ios::end);
     size_t fileSize = stream.tellg();
     stream.seekg(0, std::ios::beg);
     size_t expectedSize = sizeof(i16) * (INPUT_SIZE * HL_SIZE + HL_SIZE + 2 * HL_SIZE * OUTPUT_BUCKETS + OUTPUT_BUCKETS);
+=======
+    stream.seekg(0, std::ios::end);
+    size_t fileSize = stream.tellg();
+    stream.seekg(0, std::ios::beg);
+>>>>>>> Stashed changes
     
+    // Included NUM_INPUT_BUCKETS in expected size check
+    size_t expectedSize = sizeof(i16) * (INPUT_SIZE * HL_SIZE * NUM_INPUT_BUCKETS + HL_SIZE + 2 * HL_SIZE * OUTPUT_BUCKETS + OUTPUT_BUCKETS);
     std::cout << "Network file size: " << fileSize << " bytes" << std::endl;
     std::cout << "Expected size: " << expectedSize << " bytes" << std::endl;
 
     stream.read(reinterpret_cast<char*>(weightsToHL.data()), weightsToHL.size() * sizeof(i16));
     stream.read(reinterpret_cast<char*>(hiddenLayerBias.data()), hiddenLayerBias.size() * sizeof(i16));
+<<<<<<< Updated upstream
     
     for (usize bucket = 0; bucket < OUTPUT_BUCKETS; ++bucket) {
         stream.read(reinterpret_cast<char*>(weightsToOut[bucket].data()),
@@ -201,34 +374,54 @@ void NNUE::loadNetwork(const std::string& filepath) {
         std::cout << "  Input buckets: " << NUM_INPUT_BUCKETS << std::endl;
         std::cout << "  Output buckets: " << OUTPUT_BUCKETS << std::endl;
     }
+=======
+    for (usize bucket = 0; bucket < OUTPUT_BUCKETS; ++bucket) {
+        stream.read(reinterpret_cast<char*>(weightsToOut[bucket].data()), weightsToOut[bucket].size() * sizeof(i16));
+    }
+    stream.read(reinterpret_cast<char*>(outputBias.data()), outputBias.size() * sizeof(i16));
+
+    if (!stream) std::cerr << "ERROR: Malformed or incomplete network file: " << filepath << std::endl;
+    else std::cout << "NNUE file loaded successfully: " << filepath << std::endl;
+>>>>>>> Stashed changes
 }
 
 // ============================================================================
-// Forward Pass
+// Forward Pass & Evaluation
 // ============================================================================
 int NNUE::forwardPass(const chess::Board* board, const AccumulatorPair& accumulators) {
     const usize outputBucket = getMaterialBucket(*board);
     const bool isWhiteSTM = board->sideToMove() == chess::Color::WHITE;
     const Accumulator& accumulatorSTM = isWhiteSTM ? accumulators.white : accumulators.black;
     const Accumulator& accumulatorNSTM = isWhiteSTM ? accumulators.black : accumulators.white;
+<<<<<<< Updated upstream
 
     i64 eval = vectorizedSCReLU(accumulatorSTM, accumulatorNSTM, outputBucket);
+=======
+    
+    i64 eval = vectorizedSCReLU(accumulatorSTM, accumulatorNSTM, outputBucket);
+    
+    // Dequantization for SCReLU
+>>>>>>> Stashed changes
     eval /= QA;
     eval += outputBias[outputBucket];
     return static_cast<int>((eval * EVAL_SCALE) / (static_cast<i64>(QA) * QB));
 }
 
+<<<<<<< Updated upstream
 // ============================================================================
 // Evaluate
 // ============================================================================
+=======
+>>>>>>> Stashed changes
 i16 NNUE::evaluate(const chess::Board& board, ThreadInfo& thisThread) {
     const int eval = g_nnue.forwardPass(&board, thisThread.accumulatorStack.current());
     return std::clamp(eval, Search::TB_MATED_IN_MAX_PLY, Search::TB_MATE_IN_MAX_PLY);
 }
 
 // ============================================================================
-// Accumulator Updates
+// Debug Functions (Kept identical)
 // ============================================================================
+<<<<<<< Updated upstream
 void AccumulatorPair::add_piece(const chess::Piece& p, const chess::Square& sq) {
     if (p == chess::Piece::NONE) return;
     const usize featureW = NNUE::feature(chess::Color::WHITE, p.color(), p.type(), sq, white.bucket, white.flip);
@@ -283,6 +476,8 @@ void AccumulatorPair::resetAccumulators(const chess::Board& board) {
     }
 }
 
+=======
+>>>>>>> Stashed changes
 void NNUE::debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket) {
     i64 stm_contrib = 0, nstm_contrib = 0;
     for (usize i = 0; i < HL_SIZE; i++) {
@@ -292,6 +487,7 @@ void NNUE::debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm
     std::cout << "STM contribution: " << stm_contrib << std::endl;
     std::cout << "NSTM contribution: " << nstm_contrib << std::endl;
     std::cout << "Total: " << (stm_contrib + nstm_contrib) << std::endl;
+<<<<<<< Updated upstream
 
     i64 stm_cp = (stm_contrib * EVAL_SCALE) / (static_cast<i64>(QA) * QA * QB);
     i64 nstm_cp = (nstm_contrib * EVAL_SCALE) / (static_cast<i64>(QA) * QA * QB);
@@ -317,10 +513,13 @@ void NNUE::debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm
     }
     std::cout << "STM weights range (bucket " << bucket << "): [" << stm_min << ", " << stm_max << "]" << std::endl;
     std::cout << "NSTM weights range (bucket " << bucket << "): [" << nstm_min << ", " << nstm_max << "]" << std::endl;
+=======
+>>>>>>> Stashed changes
 }
 
 void NNUE::debugNetwork(const chess::Board& board, const AccumulatorPair& accumulators) {
     std::cout << "\n========== NNUE DEBUG ==========\n" << std::endl;
+<<<<<<< Updated upstream
     std::cout << "--- Weight Statistics ---" << std::endl;
 
     i16 minHL = weightsToHL[0], maxHL = weightsToHL[0];
@@ -462,6 +661,15 @@ void NNUE::debugNetwork(const chess::Board& board, const AccumulatorPair& accumu
         int cp = static_cast<int>((evalScaled * EVAL_SCALE) / (static_cast<i64>(QA) * QB));
         std::cout << "  Bucket " << b << ": " << cp << " cp" << (b == bucket ? " <-- active" : "") << std::endl;
     }
+=======
+    const usize bucket = getMaterialBucket(board);
+    const bool isWhiteSTM = board.sideToMove() == chess::Color::WHITE;
+    const Accumulator& stm = isWhiteSTM ? accumulators.white : accumulators.black;
+    const Accumulator& nstm = isWhiteSTM ? accumulators.black : accumulators.white;
+    
+    i32 rawEval = vectorizedSCReLU(stm, nstm, bucket);
+    std::cout << "Raw vectorizedSCReLU result: " << rawEval << std::endl;
+>>>>>>> Stashed changes
     std::cout << "\n================================\n" << std::endl;
 }
 
@@ -469,7 +677,10 @@ void NNUE::showBuckets(const chess::Board* board, const AccumulatorPair& accumul
     std::cout << "+------------+------------+\n"
               << "|   Bucket   | Evaluation |\n"
               << "+------------+------------+" << std::endl;
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
     const usize currentBucket = getMaterialBucket(*board);
     const bool isWhiteSTM = board->sideToMove() == chess::Color::WHITE;
     const Accumulator& accumulatorSTM = isWhiteSTM ? accumulators.white : accumulators.black;
@@ -480,7 +691,10 @@ void NNUE::showBuckets(const chess::Board* board, const AccumulatorPair& accumul
         i64 evalScaled = eval / QA;
         evalScaled += outputBias[bucket];
         int finalEval = static_cast<int>((evalScaled * EVAL_SCALE) / (static_cast<i64>(QA) * QB));
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
         const char* marker = (bucket == currentBucket) ? "*" : " ";
         printf("| %s%-9zu | %+10.2f |\n", marker, bucket, finalEval / 100.0);
     }
