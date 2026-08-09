@@ -84,7 +84,7 @@ using Vectori32 = __m256i;
 #define vec_madd_epi16 _mm256_madd_epi16
 #define vec_mullo_epi16 _mm256_mullo_epi16
 #define vec_add_epi32 _mm256_add_epi32
-#define vec_setzero_epi32() _mm256_setzero_si512()
+#define vec_setzero_epi32() _mm256_setzero_si256()
 inline i32 vec_reduce_epi32(Vectori32 vec) {
     __m128i xmm1 = _mm256_extracti128_si256(vec, 1);
     __m128i xmm0 = _mm256_castsi256_si128(vec);
