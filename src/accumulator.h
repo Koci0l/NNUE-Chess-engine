@@ -1,5 +1,4 @@
 #pragma once
-
 #include "config.h"
 #include <cstring>
 #include <array>
@@ -11,18 +10,20 @@ namespace chess {
     class Move;
 }
 
-#if defined(__AVX512F__)
-    #define ALIGNMENT alignas(64)
-#elif defined(__AVX2__) || defined(__AVX__)
-    #define ALIGNMENT alignas(32)
+#if defined(AVX512F)
+#define ALIGNMENT alignas(64)
+#elif defined(AVX2) || defined(AVX)
+#define ALIGNMENT alignas(32)
 #else
-    #define ALIGNMENT alignas(16)
+#define ALIGNMENT alignas(16)
 #endif
 
 class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
-    
+    usize bucket = 0;
+    int flip = 0;
+
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -35,7 +36,7 @@ struct AccumulatorPair {
     void add_piece(const chess::Piece& p, const chess::Square& sq);
     void remove_piece(const chess::Piece& p, const chess::Square& sq);
     void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
-
+    
     bool operator==(const AccumulatorPair& other) const {
         return std::memcmp(this, &other, sizeof(AccumulatorPair)) == 0;
     }
