@@ -1,6 +1,8 @@
 #pragma once
+
 #include "config.h"
 #include <cstring>
+#include <cstdint>
 #include <array>
 
 namespace chess {
@@ -10,17 +12,18 @@ namespace chess {
     class Move;
 }
 
-#if defined(AVX512F)
-#define ALIGNMENT alignas(64)
-#elif defined(AVX2) || defined(AVX)
-#define ALIGNMENT alignas(32)
+#if defined(__AVX512F__)
+    #define ALIGNMENT alignas(64)
+#elif defined(__AVX2__) || defined(__AVX__)
+    #define ALIGNMENT alignas(32)
 #else
-#define ALIGNMENT alignas(16)
+    #define ALIGNMENT alignas(16)
 #endif
 
 class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
+
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -28,16 +31,18 @@ public:
 struct AccumulatorPair {
     Accumulator white;
     Accumulator black;
-    int white_bucket = -1; // Added
-    int black_bucket = -1; // Added
+
+    // King square indices (0..63) for input-bucket / mirror orientation.
+    uint8_t whiteKing = 0;
+    uint8_t blackKing = 0;
 
     void resetAccumulators(const chess::Board& board);
-    void refresh_white(const chess::Board& board); // Added
-    void refresh_black(const chess::Board& board); // Added
+    void add_piece(const chess::Piece& p, const chess::Square& sq);
+    void remove_piece(const chess::Piece& p, const chess::Square& sq);
+    void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
 
-    void add_piece(const chess::Piece& p, const chess::Square& sq, bool skip_white = false, bool skip_black = false);
-    void remove_piece(const chess::Piece& p, const chess::Square& sq, bool skip_white = false, bool skip_black = false);
-    void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to, bool skip_white = false, bool skip_black = false);
+    bool kingBucketChanged(const chess::Piece& p, const chess::Square& from,
+                           const chess::Square& to) const;
 
     bool operator==(const AccumulatorPair& other) const {
         return std::memcmp(this, &other, sizeof(AccumulatorPair)) == 0;
@@ -52,19 +57,24 @@ private:
     static constexpr size_t MAX_DEPTH = 128;
     ALIGNMENT AccumulatorPair stack[MAX_DEPTH];
     size_t idx = 0;
+
 public:
     AccumulatorPair& current() { return stack[idx]; }
     const AccumulatorPair& current() const { return stack[idx]; }
-    void push() { 
+
+    void push() {
         stack[idx + 1] = stack[idx];
         ++idx;
     }
-    void pop() { 
-        if (idx > 0) --idx; 
+
+    void pop() {
+        if (idx > 0) --idx;
     }
+
     void resetAccumulators(const chess::Board& board) {
         idx = 0;
         stack[0].resetAccumulators(board);
     }
+
     size_t size() const { return idx + 1; }
 };
