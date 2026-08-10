@@ -10,7 +10,7 @@ PYTHON ?= python
 # Network files
 # ============================================================================
 
-EVALFILE ?= 768-1024x2-1-8.bin
+EVALFILE ?= quantised.bin
 
 # Big policy net.
 POLICYFILE ?= quantised-dual-layer-hard-2048.bin
@@ -48,7 +48,7 @@ CXXFLAGS += -DPOLICY_SMALL_HL=$(POLICY_SMALL_HL)
 # Target
 # ============================================================================
 
-TARGET ?= $(or $(EXE), Kociolek-2.2.exe)
+TARGET ?= $(or $(EXE), Kociolek-new.exe)
 
 SOURCES = $(wildcard src/*.cpp)
 
