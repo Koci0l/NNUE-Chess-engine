@@ -2,7 +2,6 @@
 
 #include "config.h"
 #include <cstring>
-#include <cstdint>
 #include <array>
 
 namespace chess {
@@ -23,7 +22,7 @@ namespace chess {
 class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
-
+    
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -32,17 +31,10 @@ struct AccumulatorPair {
     Accumulator white;
     Accumulator black;
 
-    // King square indices (0..63) for input-bucket / mirror orientation.
-    uint8_t whiteKing = 0;
-    uint8_t blackKing = 0;
-
     void resetAccumulators(const chess::Board& board);
     void add_piece(const chess::Piece& p, const chess::Square& sq);
     void remove_piece(const chess::Piece& p, const chess::Square& sq);
     void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
-
-    bool kingBucketChanged(const chess::Piece& p, const chess::Square& from,
-                           const chess::Square& to) const;
 
     bool operator==(const AccumulatorPair& other) const {
         return std::memcmp(this, &other, sizeof(AccumulatorPair)) == 0;
@@ -62,13 +54,13 @@ public:
     AccumulatorPair& current() { return stack[idx]; }
     const AccumulatorPair& current() const { return stack[idx]; }
 
-    void push() {
+    void push() { 
         stack[idx + 1] = stack[idx];
         ++idx;
     }
 
-    void pop() {
-        if (idx > 0) --idx;
+    void pop() { 
+        if (idx > 0) --idx; 
     }
 
     void resetAccumulators(const chess::Board& board) {

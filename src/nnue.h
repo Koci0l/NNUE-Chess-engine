@@ -6,6 +6,7 @@
 #include <array>
 #include <string>
 
+// Include types.h for ThreadInfo
 #include "types.h"
 
 #if defined(__AVX512F__)
@@ -17,6 +18,7 @@
 #endif
 
 struct NNUE {
+    // Weights and biases
     alignas(NN_ALIGNMENT) std::array<i16, INPUT_SIZE * HL_SIZE> weightsToHL;
     alignas(NN_ALIGNMENT) std::array<i16, HL_SIZE> hiddenLayerBias;
     alignas(NN_ALIGNMENT) std::array<std::array<i16, 2 * HL_SIZE>, OUTPUT_BUCKETS> weightsToOut;
@@ -28,22 +30,14 @@ struct NNUE {
 
     i32 vectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
 
-    static usize feature(chess::Color perspective,
-                         chess::Square kingSq,
-                         chess::Color color,
-                         chess::PieceType piece,
-                         chess::Square square);
-
-    static int kingBucket(chess::Color perspective, chess::Square kingSq);
-    static bool kingMirror(chess::Color perspective, chess::Square kingSq);
-
+    static usize feature(chess::Color perspective, chess::Color color, chess::PieceType piece, chess::Square square);
     static usize getMaterialBucket(const chess::Board& board);
 
     void loadNetwork(const std::string& filepath);
 
     int forwardPass(const chess::Board* board, const AccumulatorPair& accumulators);
     static i16 evaluate(const chess::Board& board, ThreadInfo& thisThread);
-
+    
     void debugNetwork(const chess::Board& board, const AccumulatorPair& accumulators);
     void debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
     void showBuckets(const chess::Board* board, const AccumulatorPair& accumulators);

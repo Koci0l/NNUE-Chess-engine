@@ -163,7 +163,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
     std::string command = tokens[0];
 
     if (command == "uci") {
-        std::cout << "id name Kociolek-2.1" << std::endl;
+        std::cout << "id name Kociolek-2.2" << std::endl;
         std::cout << "id author Kociolek" << std::endl;
 
         std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
