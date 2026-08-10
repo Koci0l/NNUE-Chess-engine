@@ -145,51 +145,118 @@ static inline bool extractCaptureInfo(const chess::Board& board,
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
                               const chess::Move& move) {
     auto moveType = move.typeOf();
+    AccumulatorPair& acc = accStack.current();
+    chess::Piece moving = board.at(move.from());
 
-    if (moveType == chess::Move::NORMAL) {
-        chess::Piece piece = board.at(move.from());
-        chess::Piece captured = board.at(move.to());
-
-        if (captured != chess::Piece::NONE)
-            accStack.current().remove_piece(captured, move.to());
-
-        accStack.current().move_piece(piece, move.from(), move.to());
-    } else if (moveType == chess::Move::PROMOTION) {
-        chess::Piece pawn = board.at(move.from());
-        chess::Piece captured = board.at(move.to());
-        chess::Piece promotedPiece = chess::Piece(move.promotionType(), pawn.color());
-
-        if (captured != chess::Piece::NONE)
-            accStack.current().remove_piece(captured, move.to());
-
-        accStack.current().remove_piece(pawn, move.from());
-        accStack.current().add_piece(promotedPiece, move.to());
-    } else if (moveType == chess::Move::ENPASSANT) {
-        chess::Piece pawn = board.at(move.from());
-        chess::Square capturedPawnSq(move.to().file(), move.from().rank());
-        chess::Piece capturedPawn = board.at(capturedPawnSq);
-
-        accStack.current().remove_piece(capturedPawn, capturedPawnSq);
-        accStack.current().move_piece(pawn, move.from(), move.to());
-    } else if (moveType == chess::Move::CASTLING) {
+    // -----------------------------------------------------------------
+    // Castling
+    // -----------------------------------------------------------------
+    if (moveType == chess::Move::CASTLING) {
         chess::Square king_from = move.from();
-        chess::Square rook_from = move.to();
+        chess::Square rook_from = move.to(); // chess-library: to() is rook from-sq
         bool king_side = rook_from > king_from;
-        chess::Color c = board.at(king_from).color();
-
+        chess::Color c = moving.color();
         chess::Square king_to = chess::Square::castling_king_square(king_side, c);
         chess::Square rook_to = chess::Square::castling_rook_square(king_side, c);
 
         chess::Piece king_piece = chess::Piece(chess::PieceType::KING, c);
         chess::Piece rook_piece = chess::Piece(chess::PieceType::ROOK, c);
 
-        accStack.current().remove_piece(king_piece, king_from);
-        accStack.current().remove_piece(rook_piece, rook_from);
-        accStack.current().add_piece(king_piece, king_to);
-        accStack.current().add_piece(rook_piece, rook_to);
+        if (acc.kingBucketChanged(king_piece, king_from, king_to)) {
+            if (c == chess::Color::WHITE) acc.whiteKing = static_cast<uint8_t>(king_to.index());
+            else                          acc.blackKing = static_cast<uint8_t>(king_to.index());
+
+            std::memcpy(acc.white.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+            std::memcpy(acc.black.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+
+            for (int sq_idx = 0; sq_idx < 64; ++sq_idx) {
+                chess::Square sq(sq_idx);
+                chess::Piece p = board.at(sq);
+                if (p == chess::Piece::NONE) continue;
+                if (sq == king_from || sq == rook_from) continue;
+                acc.add_piece(p, sq);
+            }
+            acc.add_piece(king_piece, king_to);
+            acc.add_piece(rook_piece, rook_to);
+            return;
+        }
+
+        // Same bucket: incremental
+        acc.remove_piece(king_piece, king_from);
+        acc.remove_piece(rook_piece, rook_from);
+        acc.add_piece(king_piece, king_to);
+        acc.add_piece(rook_piece, rook_to);
+        if (c == chess::Color::WHITE) acc.whiteKing = static_cast<uint8_t>(king_to.index());
+        else                          acc.blackKing = static_cast<uint8_t>(king_to.index());
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    // King move that crosses bucket / mirror → full refresh
+    // -----------------------------------------------------------------
+    if (moving.type() == chess::PieceType::KING &&
+        acc.kingBucketChanged(moving, move.from(), move.to())) {
+
+        chess::Color c = moving.color();
+        if (c == chess::Color::WHITE) acc.whiteKing = static_cast<uint8_t>(move.to().index());
+        else                          acc.blackKing = static_cast<uint8_t>(move.to().index());
+
+        std::memcpy(acc.white.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+        std::memcpy(acc.black.values, g_nnue.hiddenLayerBias.data(), HL_SIZE * sizeof(i16));
+
+        chess::Piece captured = chess::Piece::NONE;
+        if (moveType == chess::Move::NORMAL)
+            captured = board.at(move.to());
+
+        for (int sq_idx = 0; sq_idx < 64; ++sq_idx) {
+            chess::Square sq(sq_idx);
+            chess::Piece p = board.at(sq);
+            if (p == chess::Piece::NONE) continue;
+            if (sq == move.from()) continue;
+            if (sq == move.to() && captured != chess::Piece::NONE) continue;
+            acc.add_piece(p, sq);
+        }
+        acc.add_piece(moving, move.to());
+        return;
+    }
+
+    // -----------------------------------------------------------------
+    // Normal incremental path
+    // -----------------------------------------------------------------
+    if (moveType == chess::Move::NORMAL) {
+        chess::Piece piece    = board.at(move.from());
+        chess::Piece captured = board.at(move.to());
+
+        if (captured != chess::Piece::NONE)
+            acc.remove_piece(captured, move.to());
+
+        acc.move_piece(piece, move.from(), move.to());
+
+        if (piece.type() == chess::PieceType::KING) {
+            if (piece.color() == chess::Color::WHITE)
+                acc.whiteKing = static_cast<uint8_t>(move.to().index());
+            else
+                acc.blackKing = static_cast<uint8_t>(move.to().index());
+        }
+    } else if (moveType == chess::Move::PROMOTION) {
+        chess::Piece pawn          = board.at(move.from());
+        chess::Piece captured      = board.at(move.to());
+        chess::Piece promotedPiece = chess::Piece(move.promotionType(), pawn.color());
+
+        if (captured != chess::Piece::NONE)
+            acc.remove_piece(captured, move.to());
+
+        acc.remove_piece(pawn, move.from());
+        acc.add_piece(promotedPiece, move.to());
+    } else if (moveType == chess::Move::ENPASSANT) {
+        chess::Piece pawn = board.at(move.from());
+        chess::Square capturedPawnSq(move.to().file(), move.from().rank());
+        chess::Piece capturedPawn = board.at(capturedPawnSq);
+
+        acc.remove_piece(capturedPawn, capturedPawnSq);
+        acc.move_piece(pawn, move.from(), move.to());
     }
 }
-
 struct SEResult {
     int ext = 0;
     bool multicut = false;
