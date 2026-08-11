@@ -497,8 +497,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         ss[ply_from_root].static_eval = -MATE_SCORE;
     }
 
-    int extension = in_check ? 1 : 0;
-
     // Reverse futility pruning
     int rfp_margin = (improving ? RFP_IMPROVING_MARGIN : RFP_NO_IMPROVING_MARGIN) * depth;
     if (!is_pv_node && !in_check && !in_singular_search &&
@@ -732,8 +730,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         ss[ply_from_root].moved_piece = moved_piece;
 
         int eval;
-        int local_extension = extension + se_ext;
-        int new_depth = depth + local_extension - 1;
+        int eval;
+        int new_depth = depth + se_ext - 1;
 
         // LMR: only call givesCheck if every other reduce condition already holds
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
