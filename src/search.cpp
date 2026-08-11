@@ -730,7 +730,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         ss[ply_from_root].moved_piece = moved_piece;
 
         int eval;
-        int eval;
         int new_depth = depth + se_ext - 1;
 
         // LMR: only call givesCheck if every other reduce condition already holds
