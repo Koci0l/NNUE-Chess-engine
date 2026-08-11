@@ -62,6 +62,10 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
+// New parameters for improving & LMR
+constexpr int IMPROVING_LMR_SCALAR = 1;
+constexpr int IMPROVING_CORRHIST_WEIGHT = 2;
+
 inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
@@ -475,10 +479,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int raw_static_eval = 0;
     int static_eval = 0;
     bool improving = false;
+    int corr_hist = 0;
     uint64_t pawn_key = getPawnKey(board);
 
     if (!in_check) {
         raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        corr_hist = g_correctionHistory.get(board.sideToMove(), pawn_key);
         static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
@@ -491,8 +497,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         ss[ply_from_root].static_eval = static_eval;
 
-        if (ply_from_root >= 2 && ss[ply_from_root - 2].static_eval != -MATE_SCORE)
-            improving = ss[ply_from_root].static_eval > ss[ply_from_root - 2].static_eval;
+        if (ply_from_root >= 2 && ss[ply_from_root - 2].static_eval != -MATE_SCORE) {
+            // Heavy correction history count: stored evals already include
+            // corrhist once; add it (WEIGHT-1) extra times on the current ply
+            // so corrhist drives the improving decision.
+            improving = (static_eval + (IMPROVING_CORRHIST_WEIGHT - 1) * corr_hist) >
+                        ss[ply_from_root - 2].static_eval;
+        }
     } else {
         ss[ply_from_root].static_eval = -MATE_SCORE;
     }
@@ -747,7 +758,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             else if (move_count <= 3) reduction = std::max(0, reduction - 1);
 
             if (!is_pv_node) reduction += 1;
-            if (!improving) reduction += 1;
+            if (!improving && !in_check) reduction += IMPROVING_LMR_SCALAR;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
