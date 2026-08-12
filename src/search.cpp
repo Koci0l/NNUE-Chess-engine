@@ -16,19 +16,19 @@ bool g_silent = false;
 static int lmr_reductions[64][64];
 
 // Rounded tuned values
-constexpr double LMR_BASE = 0.6037;
-constexpr double LMR_DIVISOR = 2.5755;
+constexpr double LMR_BASE = 0.5650;
+constexpr double LMR_DIVISOR = 2.7017;
 
-constexpr int RFP_IMPROVING_MARGIN = 59;
-constexpr int RFP_NO_IMPROVING_MARGIN = 92;
+constexpr int RFP_IMPROVING_MARGIN = 60;
+constexpr int RFP_NO_IMPROVING_MARGIN = 83;
 
-constexpr int FUTILITY_BASE_MARGIN = 102;
-constexpr int FUTILITY_PER_DEPTH_MARGIN = 85;
+constexpr int FUTILITY_BASE_MARGIN = 108;
+constexpr int FUTILITY_PER_DEPTH_MARGIN = 77;
 
-constexpr int SEE_NOISY_MARGIN = 63;
-constexpr int SEE_QUIET_MARGIN = 56;
+constexpr int SEE_NOISY_MARGIN = 61;
+constexpr int SEE_QUIET_MARGIN = 52;
 
-constexpr int ASP_DELTA = 20;
+constexpr int ASP_DELTA = 29;
 
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
