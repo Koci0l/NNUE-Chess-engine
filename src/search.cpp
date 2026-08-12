@@ -30,6 +30,9 @@ constexpr int SEE_QUIET_MARGIN = 56;
 
 constexpr int ASP_DELTA = 20;
 
+// Extra LMR ply on predicted cut nodes (start with 1)
+constexpr int LMR_CUTNODE_EXTRA = 1;
+
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
@@ -238,7 +241,8 @@ static inline int getCombinedHist(chess::Color side, const chess::Move& move,
 SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int ply_from_root,
                                 ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
                                 chess::Move tt_move, uint64_t hash,
-                                bool is_pv_node, bool is_quiet_move, SearchStack* ss) {
+                                bool is_pv_node, bool is_quiet_move, SearchStack* ss,
+                                bool cutNode) {
     SEResult out;
 
     if (depth < SE_MIN_DEPTH || tt_move == chess::Move()) return out;
@@ -259,8 +263,10 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
     int seDepth = (depth - 1) / 2;
     if (seDepth <= 0) return out;
 
+    // Same node type as the parent (excluded-move search, not a child)
     int val = alphaBeta(board, seDepth, singular_beta - 1, singular_beta,
-                        ply_from_root, thread, tm, stats, false, chess::Move(), ss, tt_move);
+                        ply_from_root, thread, tm, stats, false, chess::Move(), ss,
+                        tt_move, cutNode);
 
     if (val < singular_beta) {
         int ext = 1;
@@ -412,7 +418,8 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
-              chess::Move previous_move, SearchStack* ss, chess::Move excluded_move) {
+              chess::Move previous_move, SearchStack* ss, chess::Move excluded_move,
+              bool cutNode) {
     stats.nodes++;
 
     alpha = std::max(alpha, -MATE_SCORE + ply_from_root);
@@ -435,6 +442,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return quiescence(board, alpha, beta, thread, ply_from_root, stats);
 
     bool is_pv_node = (beta - alpha) > 1;
+    if (is_pv_node)
+        cutNode = false;  // a PV node is never a cut node
+
     bool in_singular_search = (excluded_move != chess::Move());
 
     uint64_t hash = getZobristHash(board);
@@ -519,7 +529,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // Null move pruning
+    // Null move pruning — child is the opposite node type
     if (allow_null && !in_check && !is_pv_node && !in_singular_search &&
         depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta) {
         int R = 3 + depth / 3 + (improving ? 1 : 0);
@@ -536,7 +546,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         int null_score = -alphaBeta(board, depth - R - 1, -beta, -beta + 1,
                                     ply_from_root + 1, thread, tm, stats, false,
-                                    chess::Move(), ss);
+                                    chess::Move(), ss, chess::Move(), !cutNode);
 
         thread.accumulatorStack.pop();
         board.unmakeNullMove();
@@ -600,10 +610,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                 thread, ply_from_root + 1, stats);
 
                 if (probcut_value >= probcut_beta) {
+                    // Child is the opposite node type
                     probcut_value = -alphaBeta(board, probcut_depth,
                                                -probcut_beta, -probcut_beta + 1,
                                                ply_from_root + 1, thread, tm, stats, false,
-                                               move, ss);
+                                               move, ss, chess::Move(), !cutNode);
                 }
 
                 board.unmakeMove(move);
@@ -692,12 +703,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && move == tt_move && !in_check) {
             auto se = probeSingularExtension(board, depth, beta, ply_from_root,
                                              thread, tm, stats, tt_move, hash,
-                                             is_pv_node, is_quiet, ss);
+                                             is_pv_node, is_quiet, ss, cutNode);
             if (se.multicut) return se.mcScore;
             se_ext = std::clamp(se.ext, -1, 3);
         }
 
-                move_count++;
+        move_count++;
 
         chess::Piece moved_piece = board.at(move.from());
 
@@ -748,6 +759,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
             if (!is_pv_node) reduction += 1;
             if (!improving) reduction += 1;
+            if (cutNode) reduction += LMR_CUTNODE_EXTRA;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
@@ -756,33 +768,45 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
+                // LMR window: child is a predicted cut node
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                  chess::Move(), true);
 
                 if (eval > alpha) {
+                    // Full-depth null-window re-search — flip the prediction
                     eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                      ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                      ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                      chess::Move(), !cutNode);
                 }
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                  chess::Move(), !cutNode);
             }
 
             if (eval > alpha && eval < beta) {
+                // PV re-search: never a cut node
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                  chess::Move(), false);
             }
         } else {
             if (move_count == 1) {
+                // First move: PV child on a PV node, else flip the prediction
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                  chess::Move(), is_pv_node ? false : !cutNode);
             } else {
+                // Non-first, no LMR: still a predicted cut node
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                  chess::Move(), true);
 
                 if (eval > alpha && eval < beta) {
                     eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                      ply_from_root + 1, thread, tm, stats, true, move, ss);
+                                      ply_from_root + 1, thread, tm, stats, true, move, ss,
+                                      chess::Move(), false);
                 }
             }
         }
@@ -1103,6 +1127,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (is_draw_move) {
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
+                    // Root is a PV node; first child is never a cut node
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
                                       thread, &tm, stats, true, move, ss);
                 } else {
@@ -1135,8 +1160,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
                     }
 
+                    // Root LMR / null-window: child is a predicted cut node
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss);
+                                      thread, &tm, stats, true, move, ss,
+                                      chess::Move(), true);
 
                     if (reduction > 0) {
                         bool policy_protected =
@@ -1146,13 +1173,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
-                                              thread, &tm, stats, true, move, ss);
+                                              thread, &tm, stats, true, move, ss,
+                                              chess::Move(), false);
                         }
                     }
 
                     if (eval > alpha && eval < beta) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
-                                          thread, &tm, stats, true, move, ss);
+                                          thread, &tm, stats, true, move, ss,
+                                          chess::Move(), false);
                     }
                 }
 
