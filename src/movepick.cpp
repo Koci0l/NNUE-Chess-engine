@@ -4,15 +4,7 @@
 #include <algorithm>
 
 static int pieceGenMask(chess::PieceType pt) {
-    switch (pt) {
-        case chess::PieceType::PAWN:   return 1;
-        case chess::PieceType::KNIGHT: return 2;
-        case chess::PieceType::BISHOP: return 4;
-        case chess::PieceType::ROOK:   return 8;
-        case chess::PieceType::QUEEN:  return 16;
-        case chess::PieceType::KING:   return 32;
-        default: return 0;
-    }
+    return 1 << static_cast<int>(pt);
 }
 
 static bool isTacticalMove(const chess::Board& board, const chess::Move& move) {
