@@ -33,6 +33,11 @@ constexpr int ASP_DELTA = 20;
 // Extra LMR ply on predicted cut nodes (start with 1)
 constexpr int LMR_CUTNODE_EXTRA = 1;
 
+// Internal Iterative Reduction
+constexpr int IIR_NONPV_MIN_DEPTH   = 4;
+constexpr int IIR_PV_MIN_DEPTH      = 8;
+constexpr int IIR_CUTNODE_MIN_DEPTH = 8;
+
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
@@ -475,11 +480,21 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         }
     }
+    if (!in_singular_search && tt_move == chess::Move() && !in_check) {
+        int iir = 0;
 
-    // IID reduction when no TT move
-    if (!in_singular_search && !is_pv_node && depth >= 4 &&
-        tt_move == chess::Move() && !in_check) {
-        depth--;
+        if (is_pv_node) {
+            if (depth >= IIR_PV_MIN_DEPTH)
+                iir = 1;
+        } else if (depth >= IIR_NONPV_MIN_DEPTH) {
+            iir = 1;
+        }
+
+        if (cutNode && depth >= IIR_CUTNODE_MIN_DEPTH)
+            iir += 1;
+
+        if (iir > 0 && iir < depth)
+            depth -= iir;
     }
 
     int raw_static_eval = 0;
