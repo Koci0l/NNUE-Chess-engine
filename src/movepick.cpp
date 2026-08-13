@@ -4,7 +4,21 @@
 #include <algorithm>
 
 static int pieceGenMask(chess::PieceType pt) {
-    return 1 << static_cast<int>(pt);
+    switch (pt) {
+        case chess::PieceType::PAWN:   return 1;
+        case chess::PieceType::KNIGHT: return 2;
+        case chess::PieceType::BISHOP: return 4;
+        case chess::PieceType::ROOK:   return 8;
+        case chess::PieceType::QUEEN:  return 16;
+        case chess::PieceType::KING:   return 32;
+        default: return 0;
+    }
+}
+
+static bool isTacticalMove(const chess::Board& board, const chess::Move& move) {
+    if (move.typeOf() == chess::Move::PROMOTION) return true;
+    if (move.typeOf() == chess::Move::ENPASSANT) return true;
+    return board.at(move.to()) != chess::Piece::NONE;
 }
 
 static bool isLegalSingleMove(const chess::Board& board, const chess::Move& move) {
@@ -15,25 +29,10 @@ static bool isLegalSingleMove(const chess::Board& board, const chess::Move& move
     if (piece.color() != board.sideToMove()) return false;
 
     const int mask = pieceGenMask(piece.type());
-    const auto mt = move.typeOf();
+    if (mask == 0) return false;
 
     chess::Movelist ml;
-
-    if (mt == chess::Move::CASTLING) {
-        chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(ml, board, mask);
-    } else if (mt == chess::Move::ENPASSANT) {
-        chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(ml, board, mask);
-    } else if (mt == chess::Move::PROMOTION) {
-        chess::movegen::legalmoves(ml, board, mask);
-    } else {
-        const chess::Piece dest = board.at(move.to());
-        if (dest != chess::Piece::NONE) {
-            if (dest.color() == piece.color()) return false;
-            chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(ml, board, mask);
-        } else {
-            chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(ml, board, mask);
-        }
-    }
+    chess::movegen::legalmoves(ml, board, mask);
 
     for (const auto& m : ml) {
         if (m == move) return true;
@@ -129,30 +128,40 @@ void MovePicker::scoreCaptures() {
     m_bad_capture_count = 0;
     m_bad_capture_idx = 0;
 
-    chess::Movelist caps;
-    chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(caps, m_board);
+    auto already = [&](const chess::Move& move) -> bool {
+        for (int i = 0; i < m_capture_count; ++i) {
+            if (m_captures[i].move == move) return true;
+        }
+        return false;
+    };
 
-    for (const auto& move : caps) {
-        if (move == m_ctx.tt_move) continue;
-        if (m_capture_count >= 256) break;
+    auto add = [&](const chess::Move& move) {
+        if (move == m_ctx.tt_move) return;
+        if (!isTacticalMove(m_board, move)) return;
+        if (already(move)) return;
+        if (m_capture_count >= 256) return;
 
         m_captures[m_capture_count].move = move;
         m_captures[m_capture_count].score = scoreOneCapture(move);
         ++m_capture_count;
+    };
+
+    if (m_board.inCheck()) {
+        chess::Movelist all;
+        chess::movegen::legalmoves(all, m_board);
+        for (const auto& move : all) add(move);
+        return;
     }
+
+    chess::Movelist caps;
+    chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(caps, m_board);
+    for (const auto& move : caps) add(move);
 
     chess::Movelist pawn_quiets;
     chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(
         pawn_quiets, m_board, pieceGenMask(chess::PieceType::PAWN));
-
     for (const auto& move : pawn_quiets) {
-        if (move.typeOf() != chess::Move::PROMOTION) continue;
-        if (move == m_ctx.tt_move) continue;
-        if (m_capture_count >= 256) break;
-
-        m_captures[m_capture_count].move = move;
-        m_captures[m_capture_count].score = scoreOneCapture(move);
-        ++m_capture_count;
+        if (move.typeOf() == chess::Move::PROMOTION) add(move);
     }
 }
 
@@ -160,25 +169,33 @@ void MovePicker::scoreQuiets() {
     m_quiet_count = 0;
     m_quiet_idx = 0;
 
-    chess::Movelist quiets;
-    chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(quiets, m_board);
-
-    for (const auto& move : quiets) {
-        if (move == m_ctx.tt_move) continue;
-        if (move.typeOf() == chess::Move::PROMOTION) continue;
+    auto add = [&](const chess::Move& move) {
+        if (move == m_ctx.tt_move) return;
+        if (isTacticalMove(m_board, move)) return;
 
         if (move == m_killer1 ||
             move == m_killer2 ||
             move == m_ctx.counter_move) {
-            continue;
+            return;
         }
 
-        if (m_quiet_count >= 256) break;
+        if (m_quiet_count >= 256) return;
 
         m_quiets[m_quiet_count].move = move;
         m_quiets[m_quiet_count].score = scoreOneQuiet(move);
         ++m_quiet_count;
+    };
+
+    if (m_board.inCheck()) {
+        chess::Movelist all;
+        chess::movegen::legalmoves(all, m_board);
+        for (const auto& move : all) add(move);
+        return;
     }
+
+    chess::Movelist quiets;
+    chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(quiets, m_board);
+    for (const auto& move : quiets) add(move);
 }
 
 chess::Move MovePicker::next(bool& is_quiet_out) {
@@ -191,13 +208,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 
                 if (m_ctx.tt_move != chess::Move() && isValid(m_ctx.tt_move)) {
                     m_last_score = 3000000;
-
-                    bool tt_capture =
-                        m_board.at(m_ctx.tt_move.to()) != chess::Piece::NONE ||
-                        m_ctx.tt_move.typeOf() == chess::Move::ENPASSANT ||
-                        m_ctx.tt_move.typeOf() == chess::Move::PROMOTION;
-
-                    is_quiet_out = !tt_capture;
+                    is_quiet_out = !isTacticalMove(m_board, m_ctx.tt_move);
                     return m_ctx.tt_move;
                 }
 
@@ -251,17 +262,10 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 
                 if (!m_skip_quiets && m_killer1 != chess::Move() &&
                     m_killer1 != m_ctx.tt_move) {
-                    if (isValid(m_killer1)) {
-                        bool is_capture =
-                            m_board.at(m_killer1.to()) != chess::Piece::NONE ||
-                            m_killer1.typeOf() == chess::Move::ENPASSANT ||
-                            m_killer1.typeOf() == chess::Move::PROMOTION;
-
-                        if (!is_capture) {
-                            m_last_score = 1500000;
-                            is_quiet_out = true;
-                            return m_killer1;
-                        }
+                    if (isValid(m_killer1) && !isTacticalMove(m_board, m_killer1)) {
+                        m_last_score = 1500000;
+                        is_quiet_out = true;
+                        return m_killer1;
                     }
                 }
 
@@ -273,17 +277,10 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
 
                 if (!m_skip_quiets && m_killer2 != chess::Move() &&
                     m_killer2 != m_ctx.tt_move && m_killer2 != m_killer1) {
-                    if (isValid(m_killer2)) {
-                        bool is_capture =
-                            m_board.at(m_killer2.to()) != chess::Piece::NONE ||
-                            m_killer2.typeOf() == chess::Move::ENPASSANT ||
-                            m_killer2.typeOf() == chess::Move::PROMOTION;
-
-                        if (!is_capture) {
-                            m_last_score = 1490000;
-                            is_quiet_out = true;
-                            return m_killer2;
-                        }
+                    if (isValid(m_killer2) && !isTacticalMove(m_board, m_killer2)) {
+                        m_last_score = 1490000;
+                        is_quiet_out = true;
+                        return m_killer2;
                     }
                 }
 
@@ -297,17 +294,11 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                     m_ctx.counter_move != m_ctx.tt_move &&
                     m_ctx.counter_move != m_killer1 &&
                     m_ctx.counter_move != m_killer2) {
-                    if (isValid(m_ctx.counter_move)) {
-                        bool is_capture =
-                            m_board.at(m_ctx.counter_move.to()) != chess::Piece::NONE ||
-                            m_ctx.counter_move.typeOf() == chess::Move::ENPASSANT ||
-                            m_ctx.counter_move.typeOf() == chess::Move::PROMOTION;
-
-                        if (!is_capture) {
-                            m_last_score = 1250000;
-                            is_quiet_out = true;
-                            return m_ctx.counter_move;
-                        }
+                    if (isValid(m_ctx.counter_move) &&
+                        !isTacticalMove(m_board, m_ctx.counter_move)) {
+                        m_last_score = 1250000;
+                        is_quiet_out = true;
+                        return m_ctx.counter_move;
                     }
                 }
 
@@ -442,54 +433,48 @@ void QSearchMovePicker::scoreCaptures() {
     m_move_count = 0;
     m_move_idx = 0;
 
+    auto already = [&](const chess::Move& move) -> bool {
+        for (int i = 0; i < m_move_count; ++i) {
+            if (m_moves[i].move == move) return true;
+        }
+        return false;
+    };
+
+    auto add = [&](const chess::Move& move, int score) {
+        if (move == m_tt_move) return;
+        if (already(move)) return;
+        if (m_move_count >= 256) return;
+
+        m_moves[m_move_count].move = move;
+        m_moves[m_move_count].score = score;
+        ++m_move_count;
+    };
+
     if (m_in_check) {
         ensureLegal();
-
         for (const auto& move : m_legal) {
-            if (move == m_tt_move) continue;
-            if (m_move_count >= 256) break;
-
-            bool is_capture = m_board.at(move.to()) != chess::Piece::NONE ||
-                              move.typeOf() == chess::Move::ENPASSANT;
-            bool is_promo = move.typeOf() == chess::Move::PROMOTION;
-
             int score = 0;
-            if (is_capture || is_promo) {
+            if (isTacticalMove(m_board, move)) {
                 score = 2000000 + tacticalScore(move);
             }
-
-            m_moves[m_move_count].move = move;
-            m_moves[m_move_count].score = score;
-            ++m_move_count;
+            add(move, score);
         }
-
         return;
     }
 
     chess::Movelist caps;
     chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(caps, m_board);
-
     for (const auto& move : caps) {
-        if (move == m_tt_move) continue;
-        if (m_move_count >= 256) break;
-
-        m_moves[m_move_count].move = move;
-        m_moves[m_move_count].score = tacticalScore(move);
-        ++m_move_count;
+        if (!isTacticalMove(m_board, move)) continue;
+        add(move, tacticalScore(move));
     }
 
     chess::Movelist pawn_quiets;
     chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(
         pawn_quiets, m_board, pieceGenMask(chess::PieceType::PAWN));
-
     for (const auto& move : pawn_quiets) {
         if (move.typeOf() != chess::Move::PROMOTION) continue;
-        if (move == m_tt_move) continue;
-        if (m_move_count >= 256) break;
-
-        m_moves[m_move_count].move = move;
-        m_moves[m_move_count].score = tacticalScore(move);
-        ++m_move_count;
+        add(move, tacticalScore(move));
     }
 }
 
@@ -500,14 +485,7 @@ chess::Move QSearchMovePicker::next() {
                 m_stage = QMovePickStage::GENERATE_CAPTURES;
 
                 if (m_tt_move != chess::Move() && isValid(m_tt_move)) {
-                    if (!m_in_check) {
-                        bool is_tactical =
-                            m_board.at(m_tt_move.to()) != chess::Piece::NONE ||
-                            m_tt_move.typeOf() == chess::Move::PROMOTION ||
-                            m_tt_move.typeOf() == chess::Move::ENPASSANT;
-
-                        if (!is_tactical) break;
-                    }
+                    if (!m_in_check && !isTacticalMove(m_board, m_tt_move)) break;
 
                     m_last_score = 3000000;
                     return m_tt_move;
