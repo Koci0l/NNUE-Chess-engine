@@ -10,6 +10,7 @@ static int pieceGenMask(chess::PieceType pt) {
 static bool isTacticalMove(const chess::Board& board, const chess::Move& move) {
     if (move.typeOf() == chess::Move::PROMOTION) return true;
     if (move.typeOf() == chess::Move::ENPASSANT) return true;
+    if (move.typeOf() == chess::Move::CASTLING) return true;
     return board.at(move.to()) != chess::Piece::NONE;
 }
 
@@ -56,7 +57,7 @@ int MovePicker::scoreOneCapture(const chess::Move& move) {
     if (move.typeOf() == chess::Move::ENPASSANT) {
         chess::Square capSq(move.to().file(), move.from().rank());
         captured_piece = m_board.at(capSq);
-    } else {
+    } else if (move.typeOf() != chess::Move::CASTLING) {
         captured_piece = m_board.at(move.to());
     }
 
@@ -154,6 +155,13 @@ void MovePicker::scoreCaptures() {
         pawn_quiets, m_board, pieceGenMask(chess::PieceType::PAWN));
     for (const auto& move : pawn_quiets) {
         if (move.typeOf() == chess::Move::PROMOTION) add(move);
+    }
+
+    chess::Movelist king_quiets;
+    chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(
+        king_quiets, m_board, pieceGenMask(chess::PieceType::KING));
+    for (const auto& move : king_quiets) {
+        if (move.typeOf() == chess::Move::CASTLING) add(move);
     }
 }
 
@@ -395,7 +403,7 @@ void QSearchMovePicker::scoreCaptures() {
         if (move.typeOf() == chess::Move::ENPASSANT) {
             chess::Square capSq(move.to().file(), move.from().rank());
             capturedP = m_board.at(capSq);
-        } else {
+        } else if (move.typeOf() != chess::Move::CASTLING) {
             capturedP = m_board.at(move.to());
         }
 
@@ -466,6 +474,14 @@ void QSearchMovePicker::scoreCaptures() {
         pawn_quiets, m_board, pieceGenMask(chess::PieceType::PAWN));
     for (const auto& move : pawn_quiets) {
         if (move.typeOf() != chess::Move::PROMOTION) continue;
+        add(move, tacticalScore(move));
+    }
+
+    chess::Movelist king_quiets;
+    chess::movegen::legalmoves<chess::movegen::MoveGenType::QUIET>(
+        king_quiets, m_board, pieceGenMask(chess::PieceType::KING));
+    for (const auto& move : king_quiets) {
+        if (move.typeOf() != chess::Move::CASTLING) continue;
         add(move, tacticalScore(move));
     }
 }
