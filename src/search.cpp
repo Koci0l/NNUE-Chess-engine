@@ -65,6 +65,8 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
+constexpr int QS_DELTA_MARGIN = 150;
+
 inline int scaleNNUE(int raw_score) {
     return raw_score;
 }
@@ -361,6 +363,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
         }
 
         if (best_score > alpha) alpha = best_score;
+
+        if (best_score + 975 + QS_DELTA_MARGIN <= alpha)
+            return best_score;
     } else {
         best_score = -MATE_SCORE + ply_from_root;
     }
@@ -382,6 +387,20 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
             continue;
+
+        if (!in_check && is_tactical) {
+            int gain = 0;
+            if (move.typeOf() == chess::Move::ENPASSANT)
+                gain = pieceValue(chess::PieceType::PAWN);
+            else if (board.at(move.to()) != chess::Piece::NONE)
+                gain = pieceValue(board.at(move.to()).type());
+            if (move.typeOf() == chess::Move::PROMOTION)
+                gain += pieceValue(move.promotionType())
+                      - pieceValue(chess::PieceType::PAWN);
+
+            if (best_score + gain + QS_DELTA_MARGIN <= alpha)
+                continue;
+        }
 
         thread.accumulatorStack.push();
         updateAccumulatorForMove(thread.accumulatorStack, board, move);
