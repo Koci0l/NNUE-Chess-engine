@@ -1,7 +1,9 @@
 #include "movepick.h"
 #include "history.h"
 #include "see.h"
+#include "policy.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 // ============================================================================
@@ -9,8 +11,9 @@
 // ============================================================================
 
 MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-                       int depth, bool skip_quiets, bool /*use_policy_unused*/)
+                       int depth, bool skip_quiets, bool use_policy)
     : m_board(board), m_ctx(ctx), m_depth(depth), m_skip_quiets(skip_quiets),
+      m_use_policy(use_policy),
       m_stage(MovePickStage::TT_MOVE),
       m_capture_count(0), m_capture_idx(0),
       m_bad_capture_count(0), m_bad_capture_idx(0),
@@ -19,7 +22,6 @@ MovePicker::MovePicker(const chess::Board& board, const MovePickerContext& ctx,
       m_legal_generated(false) {
     m_killer1 = g_killerMoves.get_killer(ctx.ply, 0);
     m_killer2 = g_killerMoves.get_killer(ctx.ply, 1);
-    (void)m_depth;
 }
 
 void MovePicker::ensureLegal() {
@@ -128,6 +130,74 @@ void MovePicker::scoreQuiets() {
         m_quiets[m_quiet_count].move = move;
         m_quiets[m_quiet_count].score = scoreOneQuiet(move);
         ++m_quiet_count;
+    }
+
+    if (!m_use_policy || m_quiet_count < 3 || m_depth < 2 ||
+        m_board.inCheck() || !g_policy_small.loaded) {
+        return;
+    }
+
+    chess::Movelist quiets;
+    for (int i = 0; i < m_quiet_count; ++i)
+        quiets.add(m_quiets[i].move);
+
+    float logits[256];
+    if (!g_policy_small.logitsLegalMoves(m_board, quiets, logits))
+        return;
+
+    int order[256];
+    float mx = -1e30f;
+    for (int i = 0; i < m_quiet_count; ++i) {
+        order[i] = i;
+        mx = std::max(mx, logits[i]);
+    }
+
+    float prob[256];
+    float sum = 0.f;
+    for (int i = 0; i < m_quiet_count; ++i) {
+        prob[i] = std::exp(logits[i] - mx);
+        sum += prob[i];
+    }
+    if (sum <= 0.f) sum = 1.f;
+
+    std::sort(order, order + m_quiet_count,
+              [&](int a, int b) { return prob[a] > prob[b]; });
+
+    float ent = 0.f;
+    for (int i = 0; i < m_quiet_count; ++i) {
+        const float p = prob[i] / sum;
+        if (p > 1e-12f) ent -= p * std::log(p);
+    }
+
+    const float invN = (m_quiet_count > 1)
+        ? std::log(static_cast<float>(m_quiet_count))
+        : 1.f;
+    const float norm = (m_quiet_count > 1) ? ent / invN : 0.f;
+    float sharp = std::clamp((0.90f - norm) / 0.35f, 0.25f, 1.0f);
+
+    const float top_p = prob[order[0]] / sum;
+    if (top_p < 0.12f)
+        sharp *= 0.5f;
+
+    int ranks[256];
+    for (int r = 0; r < m_quiet_count; ++r)
+        ranks[order[r]] = r;
+
+    for (int i = 0; i < m_quiet_count; ++i) {
+        const float p = prob[i] / sum;
+        const float rel = std::log(std::max(p, 1e-9f) * static_cast<float>(m_quiet_count));
+        const int r = ranks[i];
+
+        int bonus = 0;
+        if (r == 0) bonus = 7000;
+        else if (r == 1) bonus = 4000;
+        else if (r == 2) bonus = 2200;
+        else if (r <= 5) bonus = 800;
+        else if (r >= 12) bonus = -1500;
+
+        bonus += int(1800.0f * rel);
+        bonus = int(float(bonus) * sharp);
+        m_quiets[i].score += std::clamp(bonus, -6000, 10000);
     }
 }
 

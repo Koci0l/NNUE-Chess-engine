@@ -643,7 +643,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
 
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
-    MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/false);
+    MovePicker mp(board, mpCtx, depth, false, true);
 
     chess::Move best_move;
     int best_score = -MATE_SCORE;

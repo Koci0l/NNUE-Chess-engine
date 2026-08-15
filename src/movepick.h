@@ -33,12 +33,11 @@ enum class MovePickStage {
 class MovePicker {
 public:
     MovePicker(const chess::Board& board, const MovePickerContext& ctx,
-               int depth, bool skip_quiets, bool use_policy_unused = false);
+               int depth, bool skip_quiets, bool use_policy = false);
 
     chess::Move next(bool& is_quiet_out);
     int lastScore() const { return m_last_score; }
 
-    // FIX-3: Allow search to skip remaining quiets without killing bad captures.
     // Call this instead of `break` when LMP triggers.
     void skipQuiets() {
         if (m_stage == MovePickStage::GENERATE_QUIETS ||
@@ -52,6 +51,7 @@ private:
     MovePickerContext m_ctx;
     int m_depth;
     bool m_skip_quiets;
+    bool m_use_policy;
     MovePickStage m_stage;
 
     chess::Move m_killer1{};
@@ -70,8 +70,6 @@ private:
     int m_quiet_idx = 0;
 
     int m_last_score = 0;
-
-    // FIX (Tier 2 speed): removed dead m_returned[512] / wasReturned / markReturned
 
     chess::Movelist m_all_legal;
     bool m_legal_generated = false;
