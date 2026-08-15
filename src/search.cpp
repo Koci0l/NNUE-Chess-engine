@@ -878,41 +878,51 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         return getDrawScore(ply_from_root);
     }
 
-    if (!in_singular_search && best_move != chess::Move() &&
-        best_score > -MATE_SCORE + 100) {
-        const bool raised = best_score > original_alpha;
-        const int cap = raised ? 800 : 400;
-        const int bonus = std::min(cap, (raised ? 8 : 4) * depth * depth);
-
+    if (best_score > original_alpha && best_move != chess::Move()) {
         if (isQuietMove(board, best_move)) {
+            int bonus = std::min(800, 8 * depth * depth);
             g_butterflyHistory.update(side_to_move, best_move.from(), best_move.to(), bonus);
 
-            chess::Piece hist_piece = board.at(best_move.from());
-            updateContHist(ply_from_root, ss, hist_piece, best_move.to(), bonus);
+            chess::Piece pv_piece = board.at(best_move.from());
+            updateContHist(ply_from_root, ss, pv_piece, best_move.to(), bonus);
 
-            const int qmalus = raised ? bonus / 4 : bonus / 2;
             for (int q = 0; q < quiets_count; ++q) {
-                if (quiets_searched[q] == best_move) continue;
-                g_butterflyHistory.update(side_to_move, quiets_searched[q].from(),
-                                          quiets_searched[q].to(), -qmalus);
+                if (quiets_searched[q] != best_move) {
+                    g_butterflyHistory.update(side_to_move, quiets_searched[q].from(),
+                                              quiets_searched[q].to(), -bonus / 4);
 
-                chess::Piece qp = board.at(quiets_searched[q].from());
-                updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -qmalus);
+                    chess::Piece qp = board.at(quiets_searched[q].from());
+                    updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -bonus / 4);
+                }
             }
         } else {
+            int bonus = std::min(800, 8 * depth * depth);
             CaptureSearchInfo ci;
             if (extractCaptureInfo(board, best_move, ci))
                 g_captureHistory.update(ci.piece_type, ci.to_sq, ci.captured_type, bonus);
         }
 
         {
+            int malus = std::min(800, 8 * depth * depth);
             for (int c = 0; c < captures_count; ++c) {
-                if (captures_searched[c].move == best_move) continue;
-                g_captureHistory.update(captures_searched[c].piece_type,
-                                        captures_searched[c].to_sq,
-                                        captures_searched[c].captured_type,
-                                        -bonus);
+                if (captures_searched[c].move != best_move) {
+                    g_captureHistory.update(captures_searched[c].piece_type,
+                                            captures_searched[c].to_sq,
+                                            captures_searched[c].captured_type,
+                                            -malus);
+                }
             }
+        }
+    } else if (!in_singular_search && best_score <= original_alpha &&
+               best_score > -MATE_SCORE + 100 && ply_from_root >= 1 &&
+               ss[ply_from_root - 1].moved_piece != chess::Piece::NONE &&
+               !in_check) {
+        const chess::Move prev = ss[ply_from_root - 1].current_move;
+        if (prev != chess::Move()) {
+            const int bonus = std::min(800, 8 * depth * depth);
+            g_butterflyHistory.update(~side_to_move, prev.from(), prev.to(), bonus);
+            updateContHist(ply_from_root - 1, ss,
+                           ss[ply_from_root - 1].moved_piece, prev.to(), bonus);
         }
     }
 
