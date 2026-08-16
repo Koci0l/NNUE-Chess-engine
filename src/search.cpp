@@ -86,22 +86,52 @@ static inline uint64_t getPawnKey(const chess::Board& board) {
     return h;
 }
 
-static inline int correctedEval(int raw_eval, chess::Color side, uint64_t pawn_key) {
-    // FIX-1: use pawn_key instead of full hash
-    return std::clamp(raw_eval + g_correctionHistory.get(side, pawn_key),
-                      -MATE_SCORE + 1, MATE_SCORE - 1);
+static inline uint64_t getNonPawnKey(const chess::Board& board) {
+    uint64_t wn = board.pieces(chess::PieceType::KNIGHT, chess::Color::WHITE).getBits();
+    uint64_t wb = board.pieces(chess::PieceType::BISHOP, chess::Color::WHITE).getBits();
+    uint64_t wr = board.pieces(chess::PieceType::ROOK,   chess::Color::WHITE).getBits();
+    uint64_t wq = board.pieces(chess::PieceType::QUEEN,  chess::Color::WHITE).getBits();
+    uint64_t wk = board.pieces(chess::PieceType::KING,   chess::Color::WHITE).getBits();
+    uint64_t bn = board.pieces(chess::PieceType::KNIGHT, chess::Color::BLACK).getBits();
+    uint64_t bb = board.pieces(chess::PieceType::BISHOP, chess::Color::BLACK).getBits();
+    uint64_t br = board.pieces(chess::PieceType::ROOK,   chess::Color::BLACK).getBits();
+    uint64_t bq = board.pieces(chess::PieceType::QUEEN,  chess::Color::BLACK).getBits();
+    uint64_t bk = board.pieces(chess::PieceType::KING,   chess::Color::BLACK).getBits();
+
+    uint64_t h = wn * 0x9E3779B97F4A7C15ULL;
+    h ^= wb * 0x517CC1B727220A95ULL;
+    h ^= wr * 0x6C62272E07BB0142ULL;
+    h ^= wq * 0x62B821756295C58DULL;
+    h ^= wk * 0xBF58476D1CE4E5B9ULL;
+    h ^= bn * 0x94D049BB133111EBULL;
+    h ^= bb * 0x2545F4914F6CDD1DULL;
+    h ^= br * 0x165667B19E3779F9ULL;
+    h ^= bq * 0x85EBCA77C2B2AE63ULL;
+    h ^= bk * 0x27D4EB2F165667C5ULL;
+    h ^= h >> 32;
+    h *= 0x6C62272E07BB0142ULL;
+    h ^= h >> 28;
+    return h;
+}
+
+static inline int correctedEval(int raw_eval, chess::Color side,
+                                uint64_t pawn_key, uint64_t np_key) {
+    int c = g_correctionHistory.get(side, pawn_key)
+          + g_materialCorrectionHistory.get(side, np_key);
+    return std::clamp(raw_eval + c, -MATE_SCORE + 1, MATE_SCORE - 1);
 }
 
 static inline void updateCorrection(chess::Color side, uint64_t pawn_key,
-                                    int depth, int raw_static_eval, int score) {
+                                    uint64_t np_key, int depth,
+                                    int raw_static_eval, int score) {
     if (depth < 4) return;
     if (std::abs(raw_static_eval) >= MATE_SCORE - 200) return;
     if (std::abs(score) >= MATE_SCORE - 200) return;
 
     int diff = std::clamp(score - raw_static_eval, -64, 64);
 
-    // FIX-1: key on pawn_key
     g_correctionHistory.update(side, pawn_key, diff, depth);
+    g_materialCorrectionHistory.update(side, np_key, diff, depth);
 }
 
 bool isDrawByRepetition(const chess::Board& board) {
@@ -486,10 +516,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int static_eval = 0;
     bool improving = false;
     uint64_t pawn_key = getPawnKey(board);
+    uint64_t np_key = getNonPawnKey(board);
 
     if (!in_check) {
         raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
-        static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key);
+        static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key, np_key);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
             if (tt_flag == TT_EXACT ||
@@ -919,7 +950,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool exact_node = best_score > original_alpha && best_score < beta;
     if (!in_singular_search && !in_check && exact_node &&
         best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+        updateCorrection(side_to_move, pawn_key, np_key, depth, raw_static_eval, best_score);
     }
 
     if (!in_singular_search) {
@@ -949,6 +980,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_contHist1ply.age();
         g_contHist2ply.age();
         g_correctionHistory.age();
+        g_materialCorrectionHistory.age();
     }
 
     RootPolicy rootPolicy;
