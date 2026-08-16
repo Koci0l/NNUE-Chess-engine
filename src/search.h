@@ -1,16 +1,19 @@
 #pragma once
+
 #include "chess.hpp"
 #include "types.h"
 #include "timeman.h"
 #include "nnue.h"
 
 extern bool g_silent;
+extern bool g_use_policy;
 
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);
 
 int quiescence(chess::Board& board, int alpha, int beta,
                ThreadInfo& thread, int ply_from_root, SearchStats& stats);
+
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss,
