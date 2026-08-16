@@ -47,7 +47,7 @@
 #define POLICYFILE_SMALL "quantised-64.bin"
 #endif
 
-static const int BENCH_DEPTH = 16;
+static const int BENCH_DEPTH = 14;
 static const int GENFEN_RANDOM_PLIES = 8;
 static const int GENFEN_EVAL_LIMIT = 400;
 
