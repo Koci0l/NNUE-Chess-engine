@@ -15,6 +15,7 @@
 #include <cctype>
 #include <algorithm>
 #include <fstream>
+#include <random>
 
 #ifndef __has_include
 #define __has_include(x) 0
@@ -46,7 +47,9 @@
 #define POLICYFILE_SMALL "quantised-64.bin"
 #endif
 
-static const int BENCH_DEPTH = 12;
+static const int BENCH_DEPTH = 20;
+static const int GENFEN_RANDOM_PLIES = 8;
+static const int GENFEN_EVAL_LIMIT = 400;
 
 static const char* BENCH_FENS[] = {
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -74,7 +77,6 @@ static const char* BENCH_FENS[] = {
 static std::vector<std::string> split(const std::string& s, char delimiter) {
     std::vector<std::string> tokens;
     std::string token;
-
     std::istringstream tokenStream(s);
 
     while (std::getline(tokenStream, token, delimiter)) {
@@ -135,6 +137,8 @@ static void run_bench(ThreadInfo& thread) {
               << (g_policy.loaded ? "LOADED" : "MISSING")
               << " small_policy_status "
               << (g_policy_small.loaded ? "LOADED" : "MISSING")
+              << " use_policy "
+              << (g_use_policy ? "true" : "false")
               << std::endl;
 
     std::cout.flush();
@@ -145,41 +149,215 @@ static bool is_integer(const std::string& s) {
 
     size_t i = 0;
 
-    if (s[0] == '-' || s[0] == '+') i = 1;
+    if (s[0] == '-' || s[0] == '+')
+        i = 1;
+
     if (i >= s.size()) return false;
 
     for (; i < s.size(); ++i) {
-        if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+        if (!std::isdigit(static_cast<unsigned char>(s[i])))
+            return false;
     }
 
     return true;
 }
 
+static std::string trim_ws(const std::string& s) {
+    size_t a = 0;
+    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a])))
+        ++a;
+
+    size_t b = s.size();
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1])))
+        --b;
+
+    return s.substr(a, b - a);
+}
+
+static bool parse_bool(const std::string& s) {
+    std::string v;
+    v.reserve(s.size());
+
+    for (char c : s) {
+        if (!std::isspace(static_cast<unsigned char>(c))) {
+            v.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(c))
+            ));
+        }
+    }
+
+    return v == "true"
+        || v == "1"
+        || v == "yes"
+        || v == "on";
+}
+
+static bool is_none_book(const std::string& path) {
+    return path.empty()
+        || path == "None"
+        || path == "none"
+        || path == "NONE"
+        || path == "<none>"
+        || path == "null"
+        || path == "-";
+}
+
+// Accepts FEN or EPD.
+static std::string epd_to_fen(const std::string& line_raw) {
+    std::string line = trim_ws(line_raw);
+
+    if (line.empty() || line[0] == '#' || line[0] == ';')
+        return "";
+
+    auto comment = line.find(';');
+    if (comment != std::string::npos) {
+        line = trim_ws(line.substr(0, comment));
+        if (line.empty()) return "";
+    }
+
+    auto tokens = split(line, ' ');
+
+    if (tokens.size() < 4) return "";
+    if (tokens[0].find('/') == std::string::npos) return "";
+
+    std::string fen = tokens[0] + " " + tokens[1] + " " + tokens[2] + " " + tokens[3];
+
+    if (tokens.size() >= 6 && is_integer(tokens[4]) && is_integer(tokens[5])) {
+        fen += " " + tokens[4] + " " + tokens[5];
+    } else {
+        fen += " 0 1";
+    }
+
+    return fen;
+}
+
+static std::vector<std::string> load_epd_book(const std::string& path) {
+    std::vector<std::string> fens;
+
+    std::ifstream in(path);
+    if (!in) return fens;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string fen = epd_to_fen(line);
+        if (!fen.empty()) fens.push_back(std::move(fen));
+    }
+
+    return fens;
+}
+
+static bool play_random_plies(chess::Board& board, int plies, std::mt19937_64& rng) {
+    for (int i = 0; i < plies; ++i) {
+        chess::Movelist moves;
+        chess::movegen::legalmoves(moves, board);
+
+        if (moves.empty()) return false;
+
+        std::uniform_int_distribution<int> dist(0, static_cast<int>(moves.size()) - 1);
+        board.makeMove(moves[dist(rng)]);
+    }
+
+    return true;
+}
+
+// OpenBench protocol:
+//   genfens <N> seed <S> book <path|None>
+// Output:
+//   info string genfens <FEN>
+static void run_genfen(chess::Board& board, ThreadInfo& thread,
+                       int count, uint64_t seed, const std::string& book_path,
+                       int random_plies, int eval_limit) {
+    if (count <= 0) return;
+
+    if (random_plies < 0) random_plies = 0;
+
+    std::vector<std::string> book;
+    bool use_book = !is_none_book(book_path);
+
+    if (use_book) {
+        book = load_epd_book(book_path);
+
+        if (book.empty()) {
+            std::cout << "info string genfen failed to load book: " << book_path
+                      << " ; using startpos" << std::endl;
+            use_book = false;
+        } else {
+            std::cout << "info string genfen loaded " << book.size()
+                      << " book positions from " << book_path << std::endl;
+        }
+    }
+
+    std::mt19937_64 rng(seed);
+
+    int generated = 0;
+    int attempts = 0;
+    const int max_attempts = std::max(count * 200, 1000);
+
+    while (generated < count && attempts < max_attempts) {
+        ++attempts;
+
+        if (use_book) {
+            std::uniform_int_distribution<size_t> book_dist(0, book.size() - 1);
+            board.setFen(book[book_dist(rng)]);
+        } else {
+            board.setFen(chess::constants::STARTPOS);
+        }
+
+        if (!play_random_plies(board, random_plies, rng))
+            continue;
+
+        chess::Movelist legal;
+        chess::movegen::legalmoves(legal, board);
+
+        if (legal.empty())
+            continue;
+
+        thread.accumulatorStack.resetAccumulators(board);
+
+        int val = g_nnue.evaluate(board, thread);
+
+        if (val < -eval_limit || val > eval_limit)
+            continue;
+
+        std::cout << "info string genfens " << board.getFen() << std::endl;
+        std::cout.flush();
+
+        ++generated;
+    }
+
+    if (generated < count) {
+        std::cout << "info string genfen only produced " << generated
+                  << " / " << count << " positions" << std::endl;
+        std::cout.flush();
+    }
+
+    board.setFen(chess::constants::STARTPOS);
+    thread.accumulatorStack.resetAccumulators(board);
+}
+
 static bool process_command(const std::string& line, chess::Board& board, ThreadInfo& thread) {
     auto tokens = split(line, ' ');
 
-    if (tokens.empty()) return true;
+    if (tokens.empty())
+        return true;
 
     std::string command = tokens[0];
 
     if (command == "uci") {
         std::cout << "id name Kociolek-2.2" << std::endl;
         std::cout << "id author Kociolek" << std::endl;
-
         std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
         std::cout << "option name Threads type spin default 1 min 1 max 1" << std::endl;
         std::cout << "option name EvalFile type string default " << EVALFILE << std::endl;
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
-
+        std::cout << "option name UsePolicy type check default true" << std::endl;
         std::cout << "uciok" << std::endl;
         std::cout.flush();
-
     } else if (command == "setoption") {
         if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "Hash" && tokens[3] == "value") {
             int mb = std::stoi(tokens[4]);
             initTT(mb);
-
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "EvalFile" && tokens[3] == "value") {
             std::string path;
 
@@ -192,7 +370,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
             board.setFen(chess::constants::STARTPOS);
             thread.accumulatorStack.resetAccumulators(board);
-
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyFile" && tokens[3] == "value") {
             std::string path;
 
@@ -204,7 +381,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             if (!g_policy.load(path)) {
                 std::cout << "info string PolicyFile load failed; keeping previous net" << std::endl;
             }
-
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyFileSmall" && tokens[3] == "value") {
             std::string path;
 
@@ -216,15 +392,48 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             if (!g_policy_small.load(path)) {
                 std::cout << "info string PolicyFileSmall load failed; keeping previous small net" << std::endl;
             }
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UsePolicy" && tokens[3] == "value") {
+            g_use_policy = parse_bool(tokens[4]);
         }
-
     } else if (command == "bench") {
         run_bench(thread);
+    } else if (command == "policyoff") {
+        g_use_policy = false;
+        std::cout << "info string UsePolicy false" << std::endl;
+        std::cout.flush();
+    } else if (command == "policyon") {
+        g_use_policy = true;
+        std::cout << "info string UsePolicy true" << std::endl;
+        std::cout.flush();
+    } else if (command == "genfens" || command == "genfen") {
+        int count = 1;
+        uint64_t seed = 0;
+        std::string book_path;
+        int random_plies = GENFEN_RANDOM_PLIES;
+        int eval_limit = GENFEN_EVAL_LIMIT;
 
+        for (size_t i = 1; i < tokens.size(); ++i) {
+            const std::string& t = tokens[i];
+
+            if (t == "seed" && i + 1 < tokens.size()) {
+                try { seed = std::stoull(tokens[++i]); } catch (...) {}
+            } else if (t == "book" && i + 1 < tokens.size()) {
+                book_path = tokens[++i];
+            } else if ((t == "randomply" || t == "randomplies" || t == "plies")
+                       && i + 1 < tokens.size()) {
+                try { random_plies = std::stoi(tokens[++i]); } catch (...) {}
+            } else if ((t == "evallimit" || t == "eval")
+                       && i + 1 < tokens.size()) {
+                try { eval_limit = std::stoi(tokens[++i]); } catch (...) {}
+            } else if (is_integer(t) && i == 1) {
+                try { count = std::stoi(t); } catch (...) {}
+            }
+        }
+
+        run_genfen(board, thread, count, seed, book_path, random_plies, eval_limit);
     } else if (command == "isready") {
         std::cout << "readyok" << std::endl;
         std::cout.flush();
-
     } else if (command == "ucinewgame") {
         board.setFen(chess::constants::STARTPOS);
         thread.accumulatorStack.resetAccumulators(board);
@@ -240,7 +449,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         g_correctionHistory.clear();
         g_pawnCorrectionHistory.clear();
         g_materialCorrectionHistory.clear();
-
     } else if (command == "position") {
         size_t moves_idx = 0;
 
@@ -249,8 +457,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             moves_idx = 2;
         } else if (tokens.size() > 1 && tokens[1] == "fen") {
             std::string fen;
-
             size_t i = 2;
+
             while (i < tokens.size() && tokens[i] != "moves") {
                 fen += tokens[i] + " ";
                 i++;
@@ -271,7 +479,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         }
 
         thread.accumulatorStack.resetAccumulators(board);
-
     } else if (command == "go") {
         int wtime = 0, btime = 0, winc = 0, binc = 0, movestogo = 30;
         int depth = 99;
@@ -305,14 +512,11 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
         std::cout << "bestmove " << chess::uci::moveToUci(best) << std::endl;
         std::cout.flush();
-
     } else if (command == "quit") {
         return false;
-
     } else if (command == "eval") {
         int val = g_nnue.evaluate(board, thread);
         std::cout << "NNUE static eval: " << val << std::endl;
-
     } else if (command == "policy" || command == "policydebug") {
         int topN = 16;
 
@@ -324,7 +528,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         }
 
         g_policy.debugPosition(board, topN);
-
     } else if (command == "policysmall" || command == "policysmalldebug") {
         int topN = 16;
 
@@ -336,7 +539,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         }
 
         g_policy_small.debugPosition(board, topN);
-
     } else if (command == "policyhit") {
         int depth = 10;
         int64_t nodes = 0;
@@ -357,9 +559,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         }
 
         runPolicyHitBench(depth, nodes, thread);
-
         thread.accumulatorStack.resetAccumulators(board);
-
     } else if (command == "policymove") {
         if (tokens.size() < 2) {
             std::cout << "info string usage: policymove <uci>" << std::endl;
@@ -372,7 +572,6 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                 g_policy.debugMove(board, m);
             }
         }
-
     } else if (command == "policysmallmove") {
         if (tokens.size() < 2) {
             std::cout << "info string usage: policysmallmove <uci>" << std::endl;
@@ -385,15 +584,12 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                 g_policy_small.debugMove(board, m);
             }
         }
-
     } else if (command == "debug") {
         thread.accumulatorStack.resetAccumulators(board);
         g_nnue.debugNetwork(board, thread.accumulatorStack.current());
-
     } else if (command == "buckets") {
         thread.accumulatorStack.resetAccumulators(board);
         g_nnue.showBuckets(&board, thread.accumulatorStack.current());
-
     } else if (command == "d" || command == "display") {
         std::cout << board << std::endl;
         std::cout << "FEN: " << board.getFen() << std::endl;
@@ -461,8 +657,22 @@ void uci_loop(int argc, char* argv[]) {
     thread.accumulatorStack.resetAccumulators(board);
 
     if (argc > 1) {
-        for (int i = 1; i < argc; ++i) {
-            if (!process_command(argv[i], board, thread)) break;
+        std::string first = argv[1];
+
+        if (first == "genfens" || first == "genfen") {
+            std::string joined;
+
+            for (int i = 1; i < argc; ++i) {
+                if (i > 1) joined += " ";
+                joined += argv[i];
+            }
+
+            process_command(joined, board, thread);
+        } else {
+            for (int i = 1; i < argc; ++i) {
+                if (!process_command(argv[i], board, thread))
+                    break;
+            }
         }
 
         delete[] tt;
@@ -472,7 +682,8 @@ void uci_loop(int argc, char* argv[]) {
     std::string line;
 
     while (std::getline(std::cin, line)) {
-        if (!process_command(line, board, thread)) break;
+        if (!process_command(line, board, thread))
+            break;
     }
 
     delete[] tt;
