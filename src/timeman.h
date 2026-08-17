@@ -3,6 +3,7 @@
 #include "chess.hpp"
 #include <chrono>
 #include <cstdint>
+#include <atomic>
 
 struct TimeManager {
     int time_left_ms = 0;
@@ -12,7 +13,7 @@ struct TimeManager {
     int soft_limit_ms = 0;
     int hard_limit_ms = 0;
     int64_t node_limit = 0;
-    const uint64_t* node_counter = nullptr;
+    std::atomic<bool> stopped{false};
     std::chrono::high_resolution_clock::time_point start_time;
     chess::Move last_best_move;
     int stability_count = 0;
@@ -23,9 +24,10 @@ struct TimeManager {
     static constexpr int MIN_THINKING_TIME = 10;
 
     void init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int ply);
-    void set_node_limit(int64_t nodes, const uint64_t* counter);
+    void set_node_limit(int64_t nodes);
     void set_policy_time_scale(double scale);
     int64_t elapsed_ms() const;
+    void stop() { stopped.store(true, std::memory_order_relaxed); }
     bool should_stop() const;
     bool should_continue_depth(int depth, double last_depth_ms) const;
     void update_stability(chess::Move best_move);

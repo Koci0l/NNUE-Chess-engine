@@ -4,9 +4,12 @@
 #include "types.h"
 #include "timeman.h"
 #include "nnue.h"
+#include <thread>
+#include <vector>
 
 extern bool g_silent;
 extern bool g_use_policy;
+extern int g_num_threads;
 
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);

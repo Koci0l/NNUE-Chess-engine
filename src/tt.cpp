@@ -6,7 +6,7 @@
 TTEntry* tt = nullptr;
 size_t TT_SIZE = 1 << 20;
 size_t TT_MASK = TT_SIZE - 1;
-uint8_t current_generation = 0; // NEW
+uint8_t current_generation = 0;
 
 void initTT(size_t mb) {
     size_t bytes = mb * 1024ULL * 1024ULL;
@@ -57,12 +57,10 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
 
     bool replace = false;
     if (entry.key == 0) {
-        replace = true; // Empty slot
+        replace = true;
     } else if (entry.key == key) {
-        // Same position: Always update if depth is close or if it's a PV node
         replace = (depth >= entry.depth - 4 || pv);
     } else {
-        // Collision: Use a priority score. 
         int age_diff = (uint8_t)(current_generation - entry.generation);
         int entry_priority = entry.depth - (age_diff * 2); 
         replace = (depth >= entry_priority);
@@ -70,7 +68,7 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
 
     if (replace) {
         entry.key = key;
-        entry.depth = static_cast<int8_t>(depth); // FIX: was int16_t cast
+        entry.depth = static_cast<int8_t>(depth);
         entry.score = static_cast<int16_t>(stored_score);
         entry.best_move = move_to_store;
         entry.flag = flag;
@@ -87,7 +85,7 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
         return false;
     }
     size_t index = key & TT_MASK;
-    const TTEntry& entry = tt[index];
+    TTEntry entry = tt[index];
 
     if (entry.key != key) {
         tt_move = chess::Move();
@@ -95,7 +93,7 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
         return false;
     }
 
-    tt_move = chess::Move(entry.best_move); // Convert back to chess::Move
+    tt_move = chess::Move(entry.best_move);
     tt_pv = entry.pv;
 
     if (entry.depth >= depth) {
@@ -124,8 +122,7 @@ bool probeTT(uint64_t key, int depth, int alpha, int beta, int& score,
 
 bool peekTT(uint64_t key, TTEntry& out) {
     if (!tt) return false;
-    const TTEntry& e = tt[key & TT_MASK];
-    if (e.key != key) return false;
-    out = e;
+    out = tt[key & TT_MASK];
+    if (out.key != key) return false;
     return true;
 }

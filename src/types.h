@@ -3,27 +3,45 @@
 #include "config.h"
 #include "accumulator.h"
 #include "chess.hpp"
+#include <atomic>
 
-// Forward declarations
 struct TimeManager;
 struct SearchStats;
 struct SearchStack;
 
-// ThreadInfo definition
+struct SearchStats {
+    std::atomic<uint64_t> nodes{0};
+
+    SearchStats() = default;
+    SearchStats(const SearchStats& other) : nodes(other.nodes.load(std::memory_order_relaxed)) {}
+    SearchStats(SearchStats&& other) noexcept : nodes(other.nodes.load(std::memory_order_relaxed)) {}
+    SearchStats& operator=(const SearchStats& other) {
+        nodes.store(other.nodes.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+    SearchStats& operator=(SearchStats&& other) noexcept {
+        nodes.store(other.nodes.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+
+    void reset() { nodes.store(0, std::memory_order_relaxed); }
+};
+
 struct ThreadInfo {
+    int thread_id = 0;
     AccumulatorStack accumulatorStack;
+    SearchStats stats;
     
     void reset(const chess::Board& board) {
         accumulatorStack.resetAccumulators(board);
+        stats.reset();
     }
 };
 
-// Constants
 constexpr int MATE_SCORE = 30000;
 constexpr int MAX_PLY = 100;
 constexpr int CONTEMPT = 0;
 
-// Utility functions
 inline chess::Color oppColor(chess::Color c) {
     return c == chess::Color::WHITE ? chess::Color::BLACK : chess::Color::WHITE;
 }
@@ -54,11 +72,6 @@ struct ScoredMove {
 
     ScoredMove() = default;
     ScoredMove(const chess::Move& m, int s) : move(m), score(s) {}
-};
-
-struct SearchStats {
-    uint64_t nodes = 0;
-    void reset() { nodes = 0; }
 };
 
 struct SearchStack {

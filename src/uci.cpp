@@ -202,7 +202,6 @@ static bool is_none_book(const std::string& path) {
         || path == "-";
 }
 
-// Accepts FEN or EPD.
 static std::string epd_to_fen(const std::string& line_raw) {
     std::string line = trim_ws(line_raw);
 
@@ -260,10 +259,6 @@ static bool play_random_plies(chess::Board& board, int plies, std::mt19937_64& r
     return true;
 }
 
-// OpenBench protocol:
-//   genfens <N> seed <S> book <path|None>
-// Output:
-//   info string genfens <FEN>
 static void run_genfen(chess::Board& board, ThreadInfo& thread,
                        int count, uint64_t seed, const std::string& book_path,
                        int random_plies, int eval_limit) {
@@ -347,7 +342,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout << "id name Kociolek-2.2" << std::endl;
         std::cout << "id author Kociolek" << std::endl;
         std::cout << "option name Hash type spin default 256 min 1 max 1024" << std::endl;
-        std::cout << "option name Threads type spin default 1 min 1 max 1" << std::endl;
+        std::cout << "option name Threads type spin default 1 min 1 max 256" << std::endl;
         std::cout << "option name EvalFile type string default " << EVALFILE << std::endl;
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
@@ -358,6 +353,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "Hash" && tokens[3] == "value") {
             int mb = std::stoi(tokens[4]);
             initTT(mb);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "Threads" && tokens[3] == "value") {
+            g_num_threads = std::clamp(std::stoi(tokens[4]), 1, 256);
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "EvalFile" && tokens[3] == "value") {
             std::string path;
 
