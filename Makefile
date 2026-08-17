@@ -2,7 +2,7 @@
 
 CXX ?= g++
 
-CXXFLAGS ?= -std=c++17 -O3 -march=x86-64-v3 -mbmi2 -DNDEBUG -pthread -static
+CXXFLAGS ?= -std=c++17 -O3 -flto=auto -march=x86-64-v3 -DNDEBUG -pthread -static 
 
 PYTHON ?= python
 
@@ -57,7 +57,6 @@ all: $(TARGET)
 # ============================================================================
 # Embedded policy headers
 # ============================================================================
-
 src/policy_embed.h: $(POLICY_EMBED_BIN) tools/embed_policy.py
 > $(PYTHON) tools/embed_policy.py $(POLICY_EMBED_BIN) src/policy_embed.h --name g_policy_embed
 
