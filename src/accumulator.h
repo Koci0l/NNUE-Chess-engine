@@ -1,28 +1,26 @@
 #pragma once
-
 #include "config.h"
 #include <cstring>
 #include <array>
 
 namespace chess {
-    class Board;
-    class Piece;
-    class Square;
-    class Move;
+class Board;
+class Piece;
+class Square;
+class Move;
 }
 
-#if defined(__AVX512F__)
-    #define ALIGNMENT alignas(64)
-#elif defined(__AVX2__) || defined(__AVX__)
-    #define ALIGNMENT alignas(32)
+#if defined(AVX512F)
+#define ALIGNMENT alignas(64)
+#elif defined(AVX2) || defined(AVX)
+#define ALIGNMENT alignas(32)
 #else
-    #define ALIGNMENT alignas(16)
+#define ALIGNMENT alignas(16)
 #endif
 
 class ALIGNMENT Accumulator {
 public:
     i16 values[HL_SIZE]{};
-    
     i16& operator[](usize index) { return values[index]; }
     const i16& operator[](usize index) const { return values[index]; }
 };
@@ -32,9 +30,9 @@ struct AccumulatorPair {
     Accumulator black;
 
     void resetAccumulators(const chess::Board& board);
-    void add_piece(const chess::Piece& p, const chess::Square& sq);
-    void remove_piece(const chess::Piece& p, const chess::Square& sq);
-    void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to);
+    void add_piece(const chess::Piece& p, const chess::Square& sq, chess::Square wk, chess::Square bk);
+    void remove_piece(const chess::Piece& p, const chess::Square& sq, chess::Square wk, chess::Square bk);
+    void move_piece(const chess::Piece& p, const chess::Square& from, const chess::Square& to, chess::Square wk, chess::Square bk);
 
     bool operator==(const AccumulatorPair& other) const {
         return std::memcmp(this, &other, sizeof(AccumulatorPair)) == 0;
@@ -58,7 +56,6 @@ public:
         stack[idx + 1] = stack[idx];
         ++idx;
     }
-
     void pop() { 
         if (idx > 0) --idx; 
     }

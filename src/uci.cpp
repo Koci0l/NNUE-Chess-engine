@@ -36,7 +36,7 @@
 #endif
 
 #ifndef EVALFILE
-#define EVALFILE "768-1024x2-1-8.bin"
+#define EVALFILE "HM.bin"
 #endif
 
 #ifndef POLICYFILE
@@ -260,13 +260,64 @@ static bool play_random_plies(chess::Board& board, int plies, std::mt19937_64& r
     return true;
 }
 
+// Random Chess960 backrank: bishops on opposite colors, Q+N+N random,
+// remaining three squares (ascending) get R, K, R which guarantees the king
+// lands between the rooks.
+static std::string random_frc_startpos(std::mt19937_64& rng) {
+    char b[8] = {0};
+
+    b[2 * static_cast<int>(rng() % 4)] = 'b';
+    b[2 * static_cast<int>(rng() % 4) + 1] = 'b';
+
+    std::vector<int> free_sq;
+    for (int i = 0; i < 8; ++i) {
+        if (!b[i]) free_sq.push_back(i);
+    }
+
+    std::shuffle(free_sq.begin(), free_sq.end(), rng);
+
+    b[free_sq[0]] = 'q';
+    b[free_sq[1]] = 'n';
+    b[free_sq[2]] = 'n';
+
+    std::sort(free_sq.begin() + 3, free_sq.end());
+    b[free_sq[3]] = 'r';
+    b[free_sq[4]] = 'k';
+    b[free_sq[5]] = 'r';
+
+    int kf = -1, r1 = -1, r2 = -1;
+    for (int i = 0; i < 8; ++i) {
+        if (b[i] == 'k') kf = i;
+        else if (b[i] == 'r') {
+            if (r1 < 0) r1 = i;
+            else r2 = i;
+        }
+    }
+
+    std::string black_rank, white_rank;
+    for (int i = 0; i < 8; ++i) {
+        black_rank += b[i];
+        white_rank += static_cast<char>(std::toupper(static_cast<unsigned char>(b[i])));
+    }
+
+    std::string castling;
+    castling += static_cast<char>('A' + r1);
+    castling += static_cast<char>('A' + r2);
+    castling += static_cast<char>('a' + r1);
+    castling += static_cast<char>('a' + r2);
+    (void)kf;
+
+    return black_rank + "/pppppppp/8/8/8/8/PPPPPPPP/" + white_rank +
+           " w " + castling + " - 0 1";
+}
+
 // OpenBench protocol:
-//   genfens <N> seed <S> book <path|None>
+//   genfens <N> seed <S> book <path|None> [frc|960|dfrc]
 // Output:
 //   info string genfens <FEN>
 static void run_genfen(chess::Board& board, ThreadInfo& thread,
                        int count, uint64_t seed, const std::string& book_path,
-                       int random_plies, int eval_limit) {
+                       int random_plies, int eval_limit, bool frc) {
     if (count <= 0) return;
 
     if (random_plies < 0) random_plies = 0;
@@ -289,6 +340,8 @@ static void run_genfen(chess::Board& board, ThreadInfo& thread,
 
     std::mt19937_64 rng(seed);
 
+    board.set960(frc || g_chess960);
+
     int generated = 0;
     int attempts = 0;
     const int max_attempts = std::max(count * 200, 1000);
@@ -299,6 +352,8 @@ static void run_genfen(chess::Board& board, ThreadInfo& thread,
         if (use_book) {
             std::uniform_int_distribution<size_t> book_dist(0, book.size() - 1);
             board.setFen(book[book_dist(rng)]);
+        } else if (frc) {
+            board.setFen(random_frc_startpos(rng));
         } else {
             board.setFen(chess::constants::STARTPOS);
         }
@@ -331,6 +386,7 @@ static void run_genfen(chess::Board& board, ThreadInfo& thread,
         std::cout.flush();
     }
 
+    board.set960(g_chess960);
     board.setFen(chess::constants::STARTPOS);
     thread.accumulatorStack.resetAccumulators(board);
 }
@@ -352,6 +408,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
         std::cout << "option name UsePolicy type check default true" << std::endl;
+        std::cout << "option name UCI_Chess960 type check default false" << std::endl;
         std::cout << "uciok" << std::endl;
         std::cout.flush();
     } else if (command == "setoption") {
@@ -394,6 +451,11 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             }
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UsePolicy" && tokens[3] == "value") {
             g_use_policy = parse_bool(tokens[4]);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UCI_Chess960" && tokens[3] == "value") {
+            g_chess960 = parse_bool(tokens[4]);
+
+            board.set960(g_chess960);
+            thread.accumulatorStack.resetAccumulators(board);
         }
     } else if (command == "bench") {
         run_bench(thread);
@@ -411,6 +473,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::string book_path;
         int random_plies = GENFEN_RANDOM_PLIES;
         int eval_limit = GENFEN_EVAL_LIMIT;
+        bool frc = false;
 
         for (size_t i = 1; i < tokens.size(); ++i) {
             const std::string& t = tokens[i];
@@ -419,6 +482,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
                 try { seed = std::stoull(tokens[++i]); } catch (...) {}
             } else if (t == "book" && i + 1 < tokens.size()) {
                 book_path = tokens[++i];
+            } else if (t == "frc" || t == "960" || t == "chess960" || t == "dfrc") {
+                frc = true;
             } else if ((t == "randomply" || t == "randomplies" || t == "plies")
                        && i + 1 < tokens.size()) {
                 try { random_plies = std::stoi(tokens[++i]); } catch (...) {}
@@ -430,7 +495,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             }
         }
 
-        run_genfen(board, thread, count, seed, book_path, random_plies, eval_limit);
+        run_genfen(board, thread, count, seed, book_path, random_plies, eval_limit, frc);
     } else if (command == "isready") {
         std::cout << "readyok" << std::endl;
         std::cout.flush();
@@ -451,6 +516,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         g_materialCorrectionHistory.clear();
     } else if (command == "position") {
         size_t moves_idx = 0;
+
+        board.set960(g_chess960);
 
         if (tokens.size() > 1 && tokens[1] == "startpos") {
             board.setFen(chess::constants::STARTPOS);
@@ -510,7 +577,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
         chess::Move best = search(board, depth, thread, tm, nodes);
 
-        std::cout << "bestmove " << chess::uci::moveToUci(best) << std::endl;
+        std::cout << "bestmove " << chess::uci::moveToUci(best, board.chess960()) << std::endl;
         std::cout.flush();
     } else if (command == "quit") {
         return false;
