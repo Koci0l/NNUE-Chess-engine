@@ -7,6 +7,7 @@
 
 extern bool g_silent;
 extern bool g_use_policy;
+extern bool g_chess960;
 
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);
