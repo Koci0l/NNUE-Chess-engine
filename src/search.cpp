@@ -573,7 +573,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (null_score >= beta) {
             if (null_score >= MATE_SCORE - 100) return beta;
-            return null_score;
+            int verif_depth = depth - R - 2;
+            if (verif_depth > 0) {
+                int verif_score = alphaBeta(board, verif_depth, beta - 1, beta,
+                                           ply_from_root, thread, tm, stats, false,
+                                           chess::Move(), ss, excluded_move);
+                if (verif_score >= beta) return null_score;
+            } else {
+                return null_score;
+            }
         }
     }
 
