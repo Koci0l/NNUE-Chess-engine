@@ -522,9 +522,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
 
         ss[ply_from_root].static_eval = static_eval;
+        int prev2 = (ply_from_root >= 2) ? ss[ply_from_root - 2].static_eval : -MATE_SCORE;
+        int prev4 = (ply_from_root >= 4) ? ss[ply_from_root - 4].static_eval : -MATE_SCORE;
 
-        if (ply_from_root >= 2 && ss[ply_from_root - 2].static_eval != -MATE_SCORE)
-            improving = ss[ply_from_root].static_eval > ss[ply_from_root - 2].static_eval;
+        if (prev2 != -MATE_SCORE) improving = static_eval > prev2 + 15;
+        if (!improving && prev4 != -MATE_SCORE) {
+            improving = static_eval > prev4;
+        }
     } else {
         ss[ply_from_root].static_eval = -MATE_SCORE;
     }
