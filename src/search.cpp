@@ -986,6 +986,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         return moves[0];
     }
 
+    constexpr int ROOT_UNSEARCHED = -2 * MATE_SCORE;
+    std::vector<int> prev_root_score(moves.size(), ROOT_UNSEARCHED);
+
     if (g_butterflyHistory.should_age()) {
         g_butterflyHistory.age();
         g_contHist1ply.age();
@@ -1057,14 +1060,21 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 chess::Move move;
                 int score;
                 bool is_quiet;
+                int orig_idx;
             };
             std::vector<RootScoredMove> root_moves;
             root_moves.reserve(moves.size());
 
-            auto scoreRootMove = [&](const chess::Move& move, bool& is_quiet_out) -> int {
+            auto scoreRootMove = [&](const chess::Move& move, int orig_idx,
+                                     bool& is_quiet_out) -> int {
                 if (move == best_move && best_move != chess::Move()) {
                     is_quiet_out = isQuietMove(board, move);
                     return 3000000;
+                }
+
+                if (prev_root_score[orig_idx] > ROOT_UNSEARCHED) {
+                    is_quiet_out = isQuietMove(board, move);
+                    return 2700000 + prev_root_score[orig_idx];
                 }
 
                 bool is_capture = board.at(move.to()) != chess::Piece::NONE ||
@@ -1132,10 +1142,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 return sc;
             };
 
+            int mi = 0;
             for (const auto& move : moves) {
                 bool q = false;
-                int s = scoreRootMove(move, q);
-                root_moves.push_back({move, s, q});
+                int s = scoreRootMove(move, mi, q);
+                root_moves.push_back({move, s, q, mi});
+                ++mi;
             }
 
             std::stable_sort(root_moves.begin(), root_moves.end(),
@@ -1230,6 +1242,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                 if (stats.stopped)
                     goto search_done;
+
+                prev_root_score[root_moves[rmi].orig_idx] = eval;
 
                 if (eval > score) {
                     score = eval;
