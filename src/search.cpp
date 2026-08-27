@@ -154,19 +154,8 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
                               const chess::Move& move) {
     auto moveType = move.typeOf();
 
-    auto getKingSq = [&](chess::Color c) -> chess::Square {
-        for (int i = 0; i < 64; ++i) {
-            chess::Square sq(i);
-            chess::Piece p = board.at(sq);
-            if (p != chess::Piece::NONE && p.type() == chess::PieceType::KING && p.color() == c) {
-                return sq;
-            }
-        }
-        return chess::Square(0);
-    };
-
-    chess::Square wk = getKingSq(chess::Color::WHITE);
-    chess::Square bk = getKingSq(chess::Color::BLACK);
+    chess::Square wk = board.kingSq(chess::Color::WHITE);
+    chess::Square bk = board.kingSq(chess::Color::BLACK);
 
     chess::Piece piece = board.at(move.from());
     if (piece.type() == chess::PieceType::KING) {
