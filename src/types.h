@@ -58,7 +58,10 @@ struct ScoredMove {
 
 struct SearchStats {
     uint64_t nodes = 0;
-    void reset() { nodes = 0; }
+    bool stopped = false;
+    void reset() { 
+        nodes = 0; stopped = false; 
+    }
 };
 
 struct SearchStack {
