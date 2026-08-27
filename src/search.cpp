@@ -154,19 +154,8 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
                               const chess::Move& move) {
     auto moveType = move.typeOf();
 
-    auto getKingSq = [&](chess::Color c) -> chess::Square {
-        for (int i = 0; i < 64; ++i) {
-            chess::Square sq(i);
-            chess::Piece p = board.at(sq);
-            if (p != chess::Piece::NONE && p.type() == chess::PieceType::KING && p.color() == c) {
-                return sq;
-            }
-        }
-        return chess::Square(0);
-    };
-
-    chess::Square wk = getKingSq(chess::Color::WHITE);
-    chess::Square bk = getKingSq(chess::Color::BLACK);
+    chess::Square wk = board.kingSq(chess::Color::WHITE);
+    chess::Square bk = board.kingSq(chess::Color::BLACK);
 
     chess::Piece piece = board.at(move.from());
     if (piece.type() == chess::PieceType::KING) {
@@ -760,7 +749,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         int check_cache = -1; // -1 unknown, 0 no check, 1 check
         auto givesCheck = [&]() -> bool {
-            if (in_check || !is_quiet) return false;
+            if (in_check) return false;
             if (check_cache < 0) {
                 check_cache =
                     (board.givesCheck(move) != chess::CheckType::NO_CHECK) ? 1 : 0;
@@ -806,7 +795,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool can_reduce = !in_check && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
-                          new_depth > 1 && !givesCheck();
+                          new_depth > 1 &&
+                          move.typeOf() != chess::Move::CASTLING &&
+                          !givesCheck();
 
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
@@ -821,7 +812,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                                                     ply_from_root, ss);
                 reduction -= std::clamp(combined_hist / 4096, -2, 2);
             } else {
-                reduction -= std::clamp(cap_hist / 4096, -2, 2);
+                reduction = (reduction + 1) / 2;
+                reduction -= std::clamp(cap_hist / 4096, -1, 1);
             }
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
