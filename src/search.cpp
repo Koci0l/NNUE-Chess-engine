@@ -153,7 +153,7 @@ static inline bool isHmChanging(const chess::Board& board, const chess::Move& mo
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
                               const chess::Move& move) {
     auto moveType = move.typeOf();
-    
+
     auto getKingSq = [&](chess::Color c) -> chess::Square {
         for (int i = 0; i < 64; ++i) {
             chess::Square sq(i);
@@ -167,7 +167,7 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
 
     chess::Square wk = getKingSq(chess::Color::WHITE);
     chess::Square bk = getKingSq(chess::Color::BLACK);
-    
+
     chess::Piece piece = board.at(move.from());
     if (piece.type() == chess::PieceType::KING) {
         chess::Square new_ksq = move.to();
@@ -343,6 +343,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
                ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
 
+    if (stats.stopped)                          // [PATCH] abort-safe
+        return alpha;
+
     if (ply_from_root >= MAX_PLY)
         return scaleNNUE(g_nnue.evaluate(board, thread));
 
@@ -415,6 +418,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
         board.unmakeMove(move);
         thread.accumulatorStack.pop();
 
+        if (stats.stopped)                      // [PATCH] abort-safe
+            return alpha;
+
         if (eval > best_score) {
             best_score = eval;
             best_move = move;
@@ -453,7 +459,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (ply_from_root >= MAX_PLY)
         return scaleNNUE(g_nnue.evaluate(board, thread));
 
-    if (tm && tm->should_stop()) return alpha;
+    if (stats.stopped || (tm && tm->should_stop())) {    // [PATCH] was: if (tm && tm->should_stop()) return alpha;
+        stats.stopped = true;                            // [PATCH]
+        return alpha;
+    }
 
     if (ply_from_root > 0) {
         if (isDrawByRepetition(board)) return getDrawScore(ply_from_root);
@@ -571,6 +580,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         thread.accumulatorStack.pop();
         board.unmakeNullMove();
 
+        if (stats.stopped)                      // [PATCH] abort-safe
+            return alpha;
+
         if (null_score >= beta) {
             if (null_score >= MATE_SCORE - 100) return beta;
             return null_score;
@@ -582,7 +594,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (!in_singular_search && !is_pv_node && !in_check &&
         depth >= PROBCUT_MIN_DEPTH && std::abs(beta) < MATE_SCORE - 200 &&
         hasNonPawnMaterial(board)) {
-        
+
         bool tt_gate = true;
         if (tt_move != chess::Move() && tt_depth >= depth - 3 && tt_score < probcut_beta)
             tt_gate = false;
@@ -646,6 +658,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
+
+                if (stats.stopped)              // [PATCH] abort-safe
+                    break;
 
                 if (probcut_value >= probcut_beta) {
                     storeTT(hash, probcut_depth, probcut_value, move, TT_LOWER, ply_from_root);
@@ -733,6 +748,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             auto se = probeSingularExtension(board, depth, beta, ply_from_root,
                                              thread, tm, stats, tt_move, hash,
                                              is_pv_node, is_quiet, ss, cutNode);
+            if (stats.stopped)                  // [PATCH] abort-safe
+                return alpha;
             if (se.multicut)
                 return se.mcScore;
             se_ext = std::clamp(se.ext, -1, 3);
@@ -836,6 +853,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         board.unmakeMove(move);
         thread.accumulatorStack.pop();
+
+        if (stats.stopped)                      // [PATCH] abort-safe
+            return alpha;
 
         if (eval > best_score) {
             best_score = eval;
@@ -1208,6 +1228,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
 
+                if (stats.stopped)                  // [PATCH] abort-safe
+                    goto search_done;
+
                 if (eval > score) {
                     score = eval;
                     depth_best_move = move;
@@ -1268,81 +1291,62 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         int64_t elapsed_for_nps = std::max<int64_t>(1, elapsed);
         uint64_t nps = (stats.nodes * 1000) / elapsed_for_nps;
 
-        auto pv_line = extractPV(board, depth);
-        const bool c960 = board.chess960();
-        std::string pv_str;
-        for (const auto& m : pv_line)
-            pv_str += chess::uci::moveToUci(m, c960) + " ";
-        if (pv_str.empty())
-            pv_str = chess::uci::moveToUci(best_move, c960);
-
-        std::string score_str;
-        if (best_score >= MATE_SCORE - 100) {
-            int mate_in = (MATE_SCORE - best_score + 1) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else if (best_score <= -MATE_SCORE + 100) {
-            int mate_in = -(MATE_SCORE + best_score) / 2;
-            score_str = "mate " + std::to_string(mate_in);
-        } else {
-            score_str = "cp " + std::to_string(best_score);
-        }
-
         if (!g_silent) {
-            std::cout << "info score " << score_str
+            std::string score_str;
+            if (std::abs(best_score) >= MATE_SCORE - 100) {
+                const int plies = MATE_SCORE - std::abs(best_score);
+                const int mate_in = (plies + 1) / 2;
+                score_str = "mate ";
+                if (best_score < 0) score_str += "-";
+                score_str += std::to_string(mate_in);
+            } else {
+                score_str = "cp " + std::to_string(best_score);
+            }
+
+            std::string pv_str;
+            for (const auto& pm : extractPV(board, depth)) {
+                pv_str += chess::uci::moveToUci(pm);
+                pv_str += " ";
+            }
+
+            std::cout << "info"
                       << " depth " << depth
+                      << " score " << score_str
                       << " nodes " << stats.nodes
-                      << " nps " << nps
-                      << " time " << elapsed
-                      << " pv " << pv_str
+                      << " nps "   << nps
+                      << " time "  << elapsed
+                      << " pv "    << pv_str
                       << std::endl;
         }
 
         tm.update_stability(best_move);
 
-        if (rootPolicy.ok &&
-            depth >= POLICY_TM_MIN_DEPTH &&
-            node_limit <= 0 &&
-            tm.soft_limit_ms < tm.hard_limit_ms) {
-            
-            chess::Move pol_top = rootPolicy.top_any;
-            float pol_p = rootPolicy.top_prob_any;
-            float pol_ent = rootPolicy.entropy_any;
-            double scale = 1.0;
+        if (g_use_policy && rootPolicy.ok && depth >= POLICY_TM_MIN_DEPTH) {
+            const bool agree = (best_move == rootPolicy.top_any);
+            const bool conf  = rootPolicy.top_prob_any >= POLICY_TM_AGREE_CONF;
+            const bool unc   = rootPolicy.top_prob_any <= POLICY_TM_UNCERTAIN;
+            const bool sharp = rootPolicy.norm_entropy_any <= POLICY_TM_ENTROPY_GATE;
 
-            const bool disagree = (pol_top != best_move);
-            if (disagree) {
-                scale = POLICY_TM_DISAGREE;
-                if (pol_p < POLICY_TM_UNCERTAIN)
-                    scale = 1.50;
-            } else if (pol_p >= POLICY_TM_AGREE_CONF) {
+            double scale = 1.0;
+            if (agree && conf && sharp)
                 scale = POLICY_TM_AGREE_S;
-            } else if (pol_p < POLICY_TM_UNCERTAIN) {
+            else if (unc)
                 scale = POLICY_TM_UNCERTAIN_S;
-            }
+            else if (!agree)
+                scale = POLICY_TM_DISAGREE;
 
             tm.set_policy_time_scale(scale);
-
-            if (!g_silent) {
-                std::cout << "info string policy_tm"
-                          << " depth " << depth
-                          << " scale " << scale
-                          << (disagree ? " disagree" : " agree")
-                          << " pol " << chess::uci::moveToUci(pol_top, board.chess960())
-                          << " (" << (pol_p * 100.f) << "%)"
-                          << " search " << chess::uci::moveToUci(best_move, board.chess960())
-                          << " ent " << pol_ent
-                          << std::endl;
-            }
-        } else {
-            tm.set_policy_time_scale(1.0);
         }
+
+        if (std::abs(best_score) >= MATE_SCORE - 100)
+            break;
+
+        if (tm.should_stop())
+            break;
     }
 
 search_done:
     if (score_out) *score_out = best_score;
     if (nodes_out) *nodes_out = stats.nodes;
-
-    std::cerr << "info string total nodes: " << stats.nodes << std::endl;
-
     return best_move;
 }
