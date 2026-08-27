@@ -154,8 +154,19 @@ void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board,
                               const chess::Move& move) {
     auto moveType = move.typeOf();
 
-    chess::Square wk = board.kingSq(chess::Color::WHITE);
-    chess::Square bk = board.kingSq(chess::Color::BLACK);
+    auto getKingSq = [&](chess::Color c) -> chess::Square {
+        for (int i = 0; i < 64; ++i) {
+            chess::Square sq(i);
+            chess::Piece p = board.at(sq);
+            if (p != chess::Piece::NONE && p.type() == chess::PieceType::KING && p.color() == c) {
+                return sq;
+            }
+        }
+        return chess::Square(0);
+    };
+
+    chess::Square wk = getKingSq(chess::Color::WHITE);
+    chess::Square bk = getKingSq(chess::Color::BLACK);
 
     chess::Piece piece = board.at(move.from());
     if (piece.type() == chess::PieceType::KING) {
@@ -769,6 +780,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             }
         }
 
+        int cap_hist = 0;
+        if (is_noisy) {
+            CaptureSearchInfo ci;
+            if (extractCaptureInfo(board, move, ci))
+                cap_hist = g_captureHistory.get(ci.piece_type, ci.to_sq, ci.captured_type);
+        }
+
         thread.accumulatorStack.push();
         bool hm_changed = isHmChanging(board, move);
         if (hm_changed) {
@@ -786,7 +804,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
-        bool can_reduce = !in_check && is_quiet && move_count > 1 &&
+        bool can_reduce = !in_check && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
                           new_depth > 1 && !givesCheck();
 
@@ -798,9 +816,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (!improving) reduction += 1;
             if (cutNode) reduction += LMR_CUTNODE_EXTRA;
 
-            int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
-                                                ply_from_root, ss);
-            reduction -= std::clamp(combined_hist / 4096, -2, 2);
+            if (is_quiet) {
+                int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
+                                                    ply_from_root, ss);
+                reduction -= std::clamp(combined_hist / 4096, -2, 2);
+            } else {
+                reduction -= std::clamp(cap_hist / 4096, -2, 2);
+            }
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
