@@ -80,20 +80,34 @@ static inline uint64_t getPawnKey(const chess::Board& board) {
     return h;
 }
 
-static inline int correctedEval(int raw_eval, chess::Color side, uint64_t pawn_key) {
-    return std::clamp(raw_eval + g_correctionHistory.get(side, pawn_key),
-                      -MATE_SCORE + 1, MATE_SCORE - 1);
+static inline uint64_t getNonPawnKey(const chess::Board& board) {
+    uint64_t h = board.pieces(chess::PieceType::KNIGHT).getBits() * 0x9E3779B97F4A7C15ULL;
+    h ^= board.pieces(chess::PieceType::BISHOP).getBits() * 0x517CC1B727220A95ULL;
+    h ^= board.pieces(chess::PieceType::ROOK).getBits() * 0x6C62272E07BB0142ULL;
+    h ^= board.pieces(chess::PieceType::QUEEN).getBits() * 0x62B821756295C58DULL;
+    h ^= h >> 32;
+    h *= 0xFF51AFD7ED558CCDULL;
+    h ^= h >> 32;
+    return h;
 }
 
+static inline int correctedEval(int raw_eval, chess::Color side,
+                                uint64_t pawn_key, uint64_t nonpawn_key) {
+    return std::clamp(raw_eval
+                      + g_pawnCorrectionHistory.get(side, pawn_key)
+                      + g_materialCorrectionHistory.get(side, nonpawn_key),
+                      -MATE_SCORE + 1, MATE_SCORE - 1);
+}
 static inline void updateCorrection(chess::Color side, uint64_t pawn_key,
+                                    uint64_t nonpawn_key,
                                     int depth, int raw_static_eval, int score) {
     if (depth < 4) return;
     if (std::abs(raw_static_eval) >= MATE_SCORE - 200) return;
     if (std::abs(score) >= MATE_SCORE - 200) return;
     int diff = std::clamp(score - raw_static_eval, -64, 64);
-    g_correctionHistory.update(side, pawn_key, diff, depth);
+    g_pawnCorrectionHistory.update(side, pawn_key, diff, depth);
+    g_materialCorrectionHistory.update(side, nonpawn_key, diff, depth);
 }
-
 bool isDrawByRepetition(const chess::Board& board) {
     return board.isRepetition(1);
 }
@@ -506,10 +520,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int static_eval = 0;
     bool improving = false;
     uint64_t pawn_key = getPawnKey(board);
+    uint64_t nonpawn_key = getNonPawnKey(board);
 
     if (!in_check) {
         raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
-        static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key);
+        static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key, nonpawn_key);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
             if (tt_flag == TT_EXACT ||
@@ -948,7 +963,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     bool exact_node = best_score > original_alpha && best_score < beta;
     if (!in_singular_search && !in_check && exact_node &&
         best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+        updateCorrection(side_to_move, pawn_key, nonpawn_key, depth, raw_static_eval, best_score);
     }
 
     if (!in_singular_search) {
@@ -979,7 +994,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_butterflyHistory.age();
         g_contHist1ply.age();
         g_contHist2ply.age();
-        g_correctionHistory.age();
+        g_pawnCorrectionHistory.age();
+        g_materialCorrectionHistory.age();
     }
 
     RootPolicy rootPolicy;
