@@ -475,6 +475,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int tt_depth = 0;
     TTFlag tt_flag = TT_EXACT;
     bool tt_hit = false;
+    bool tt_pv = false;
 
     if (!in_singular_search) {
         TTEntry te;
@@ -484,6 +485,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             tt_depth = te.depth;
             tt_flag  = te.flag;
             tt_score = te.score;
+            tt_pv    = te.pv || te.flag == TT_EXACT;
 
             if (tt_score >= MATE_SCORE - 100) tt_score -= ply_from_root;
             else if (tt_score <= -MATE_SCORE + 100) tt_score += ply_from_root;
@@ -797,6 +799,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (!is_pv_node) reduction += 1;
             if (!improving) reduction += 1;
             if (cutNode) reduction += LMR_CUTNODE_EXTRA;
+            if (tt_pv) reduction -= 1;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
