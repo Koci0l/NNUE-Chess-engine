@@ -210,8 +210,9 @@ struct SEResult {
     int mcScore = 0;
 };
 
-static inline void updateContHist(int ply_from_root, const SearchStack* ss,
-                                  chess::Piece piece, chess::Square to, int bonus) {
+static inline void updateQuietHistories(int ply_from_root, const SearchStack* ss,
+                                        chess::Piece piece, chess::Square to,
+                                        int bonus, uint64_t pawn_key) {
     if (ply_from_root >= 1 &&
         ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
         g_contHist1ply.update(ss[ply_from_root - 1].moved_piece,
@@ -224,12 +225,14 @@ static inline void updateContHist(int ply_from_root, const SearchStack* ss,
                               ss[ply_from_root - 2].current_move.to(),
                               piece, to, bonus);
     }
+    g_pawnHistory.update(pawn_key, piece, to, bonus);
 }
 
 static inline int getCombinedHist(chess::Color side, const chess::Move& move,
                                   chess::Piece piece, int ply_from_root,
-                                  const SearchStack* ss) {
+                                  const SearchStack* ss, uint64_t pawn_key) {
     int h = g_butterflyHistory.get(side, move.from(), move.to());
+    h += g_pawnHistory.get(pawn_key, piece, move.to());
     if (ply_from_root >= 1 &&
         ss[ply_from_root - 1].moved_piece != chess::Piece::NONE) {
         h += g_contHist1ply.get(ss[ply_from_root - 1].moved_piece,
@@ -719,7 +722,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
             is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
             chess::Piece hp = board.at(move.from());
-            int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
+            int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss, pawn_key);
             if (hist_score < -2000 * depth)
                 continue;
         }
@@ -799,7 +802,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (cutNode) reduction += LMR_CUTNODE_EXTRA;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
-                                                ply_from_root, ss);
+                                                ply_from_root, ss, pawn_key);
             reduction -= std::clamp(combined_hist / 4096, -2, 2);
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
@@ -859,13 +862,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 g_butterflyHistory.update(side_to_move, move.from(), move.to(), bonus);
 
                 chess::Piece cut_piece = board.at(move.from());
-                updateContHist(ply_from_root, ss, cut_piece, move.to(), bonus);
+                updateQuietHistories(ply_from_root, ss, cut_piece, move.to(), bonus, pawn_key);
 
                 for (int q = 0; q < quiets_count; ++q) {
                     g_butterflyHistory.update(side_to_move, quiets_searched[q].from(),
                                               quiets_searched[q].to(), -bonus / 2);
                     chess::Piece qp = board.at(quiets_searched[q].from());
-                    updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -bonus / 2);
+                    updateQuietHistories(ply_from_root, ss, qp, quiets_searched[q].to(),
+                                         -bonus / 2, pawn_key);
                 }
             } else {
                 int bonus = std::min(1600, 32 * depth * depth);
@@ -915,14 +919,15 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             g_butterflyHistory.update(side_to_move, best_move.from(), best_move.to(), bonus);
 
             chess::Piece pv_piece = board.at(best_move.from());
-            updateContHist(ply_from_root, ss, pv_piece, best_move.to(), bonus);
+            updateQuietHistories(ply_from_root, ss, pv_piece, best_move.to(), bonus, pawn_key);
 
             for (int q = 0; q < quiets_count; ++q) {
                 if (quiets_searched[q] != best_move) {
                     g_butterflyHistory.update(side_to_move, quiets_searched[q].from(),
                                               quiets_searched[q].to(), -bonus / 4);
                     chess::Piece qp = board.at(quiets_searched[q].from());
-                    updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -bonus / 4);
+                    updateQuietHistories(ply_from_root, ss, qp, quiets_searched[q].to(),
+                                         -bonus / 4, pawn_key);
                 }
             }
         } else {
@@ -980,6 +985,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         g_contHist1ply.age();
         g_contHist2ply.age();
         g_correctionHistory.age();
+        g_pawnHistory.age();
     }
 
     RootPolicy rootPolicy;

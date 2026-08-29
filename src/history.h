@@ -145,6 +145,48 @@ struct ContinuationHistory {
     }
 };
 
+// [pawn history] Indexed by pawn-structure key x piece x to-square.
+// Learns which pieces want to go where under a given pawn structure.
+struct PawnHistory {
+    static constexpr int HISTORY_MAX = 16384;
+    static constexpr int HISTORY_GRAVITY = HISTORY_MAX;
+    static constexpr int CLUSTER_COUNT = 512; // power of 2, ~768 KB total
+
+    int16_t table[CLUSTER_COUNT][12][64];
+
+    PawnHistory() { clear(); }
+
+    void clear() { std::memset(table, 0, sizeof(table)); }
+
+    static int pieceIndex(chess::Piece p) {
+        return static_cast<int>(p.type()) * 2 + static_cast<int>(p.color());
+    }
+
+    static int clusterIndex(uint64_t pawn_key) {
+        return static_cast<int>(pawn_key & (CLUSTER_COUNT - 1));
+    }
+
+    int get(uint64_t pawn_key, chess::Piece piece, chess::Square to) const {
+        if (piece == chess::Piece::NONE) return 0;
+        return table[clusterIndex(pawn_key)][pieceIndex(piece)][to.index()];
+    }
+
+    void update(uint64_t pawn_key, chess::Piece piece, chess::Square to, int bonus) {
+        if (piece == chess::Piece::NONE) return;
+        int16_t& entry = table[clusterIndex(pawn_key)][pieceIndex(piece)][to.index()];
+        int clamped = std::clamp(bonus, -HISTORY_MAX, HISTORY_MAX);
+        int delta = clamped - (int(entry) * std::abs(clamped)) / HISTORY_GRAVITY;
+        entry = static_cast<int16_t>(std::clamp(int(entry) + delta, -HISTORY_MAX, HISTORY_MAX));
+    }
+
+    void age() {
+        for (int i = 0; i < CLUSTER_COUNT; ++i)
+            for (int j = 0; j < 12; ++j)
+                for (int k = 0; k < 64; ++k)
+                    table[i][j][k] /= 2;
+    }
+};
+
 struct CorrectionHistory {
     static constexpr int TABLE_SIZE = 16384;
     static constexpr int SCALE = 16;
@@ -181,6 +223,7 @@ extern CounterMoveHistory g_counterMoves;
 extern CaptureHistory g_captureHistory;
 extern ContinuationHistory g_contHist1ply;
 extern ContinuationHistory g_contHist2ply;
+extern PawnHistory g_pawnHistory;
 extern CorrectionHistory g_correctionHistory;
 extern CorrectionHistory g_pawnCorrectionHistory;
 extern CorrectionHistory g_materialCorrectionHistory;
