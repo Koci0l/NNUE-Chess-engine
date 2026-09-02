@@ -786,21 +786,29 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
-        bool can_reduce = !in_check && is_quiet && move_count > 1 &&
+        bool can_reduce = !in_check && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
                           new_depth > 1 && !givesCheck();
 
         if (can_reduce) {
-            int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
-            if (move == tt_move) reduction = 0;
-            else if (move_count <= 3) reduction = std::max(0, reduction - 1);
-            if (!is_pv_node) reduction += 1;
-            if (!improving) reduction += 1;
-            if (cutNode) reduction += LMR_CUTNODE_EXTRA;
+            int reduction = 0;
+            if (is_quiet) {
+                reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
+                if (move == tt_move) reduction = 0;
+                else if (move_count <= 3) reduction = std::max(0, reduction - 1);
+                if (!is_pv_node) reduction += 1;
+                if (!improving) reduction += 1;
+                if (cutNode) reduction += LMR_CUTNODE_EXTRA;
 
-            int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
-                                                ply_from_root, ss);
-            reduction -= std::clamp(combined_hist / 4096, -2, 2);
+                int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
+                                                    ply_from_root, ss);
+                reduction -= std::clamp(combined_hist / 4096, -2, 2);
+            } else {
+                reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)] / 2;
+                if (!chess::see::see_ge(board, move, 0)) reduction += 1;
+                if (!is_pv_node) reduction += 1;
+                if (cutNode) reduction += LMR_CUTNODE_EXTRA;
+            }
             reduction = std::clamp(reduction, 0, new_depth - 1);
 
             if (reduction > 0) {
