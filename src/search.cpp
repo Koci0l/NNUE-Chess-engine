@@ -87,7 +87,7 @@ static inline int correctedEval(int raw_eval, chess::Color side, uint64_t pawn_k
 
 static inline void updateCorrection(chess::Color side, uint64_t pawn_key,
                                     int depth, int raw_static_eval, int score) {
-    if (depth < 4) return;
+    if (depth < 2) return;
     if (std::abs(raw_static_eval) >= MATE_SCORE - 200) return;
     if (std::abs(score) >= MATE_SCORE - 200) return;
     int diff = std::clamp(score - raw_static_eval, -64, 64);
@@ -867,6 +867,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                     chess::Piece qp = board.at(quiets_searched[q].from());
                     updateContHist(ply_from_root, ss, qp, quiets_searched[q].to(), -bonus / 2);
                 }
+
+                if (!in_singular_search && !in_check && raw_static_eval < beta) {
+                    updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, eval);
+                }
             } else {
                 int bonus = std::min(1600, 32 * depth * depth);
                 CaptureSearchInfo ci;
@@ -945,10 +949,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    bool exact_node = best_score > original_alpha && best_score < beta;
-    if (!in_singular_search && !in_check && exact_node &&
-        best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+    if (!in_singular_search && !in_check &&
+        (best_move == chess::Move() || isQuietMove(board, best_move))) {
+        if (!(best_score <= original_alpha && raw_static_eval <= original_alpha)) {
+            updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+        }
     }
 
     if (!in_singular_search) {
