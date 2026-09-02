@@ -1020,25 +1020,18 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         chess::Move depth_best_move = best_move;
         int score = -MATE_SCORE;
         int delta = ASP_DELTA;
-        int aspiration_alpha, aspiration_beta;
+        int alpha = -MATE_SCORE;
+        int beta  =  MATE_SCORE;
+
+        if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
+            alpha = std::max(-MATE_SCORE, best_score - delta);
+            beta  = std::min( MATE_SCORE, best_score + delta);
+        }
 
         const bool root_lmr_enabled =
             depth >= POLICY_ROOT_LMR_MIN_DEPTH && moves.size() > 1;
 
-        bool aspiration_failed_low = false;
-        bool aspiration_failed_high = false;
-
         while (true) {
-            if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
-                aspiration_alpha = std::max(-MATE_SCORE, best_score - delta);
-                aspiration_beta  = std::min( MATE_SCORE, best_score + delta);
-            } else {
-                aspiration_alpha = -MATE_SCORE;
-                aspiration_beta  =  MATE_SCORE;
-            }
-
-            int alpha = aspiration_alpha;
-            int beta  = aspiration_beta;
             score = -MATE_SCORE;
             depth_best_move = best_move;
 
@@ -1234,24 +1227,22 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 root_move_count++;
             }
 
-            if (score <= aspiration_alpha && aspiration_alpha > -MATE_SCORE) {
-                aspiration_failed_low = true;
-                aspiration_failed_high = false;
+            if (score <= alpha) {
+                alpha = std::max(-MATE_SCORE, alpha - delta);
                 delta *= 2;
-                best_score = score;
-                if (delta > 500)
-                    delta = MATE_SCORE;
-            } else if (score >= aspiration_beta && aspiration_beta < MATE_SCORE) {
-                aspiration_failed_high = true;
-                aspiration_failed_low = false;
+                if (delta > 500) {
+                    alpha = -MATE_SCORE;
+                    beta  =  MATE_SCORE;
+                }
+            } else if (score >= beta) {
+                beta = std::min(MATE_SCORE, beta + delta);
                 delta *= 2;
-                best_score = score;
                 best_move = depth_best_move;
-                if (delta > 500)
-                    delta = MATE_SCORE;
+                if (delta > 500) {
+                    alpha = -MATE_SCORE;
+                    beta  =  MATE_SCORE;
+                }
             } else {
-                aspiration_failed_low = false;
-                aspiration_failed_high = false;
                 break;
             }
 
@@ -1261,16 +1252,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         best_score = score;
         best_move = depth_best_move;
 
-        {
-            TTFlag root_flag;
-            if (aspiration_failed_low)
-                root_flag = TT_UPPER;
-            else if (aspiration_failed_high)
-                root_flag = TT_LOWER;
-            else
-                root_flag = TT_EXACT;
-            storeTT(getZobristHash(board), depth, best_score, best_move, root_flag, 0, true);
-        }
+        storeTT(getZobristHash(board), depth, best_score, best_move, TT_EXACT, 0, true);
 
         auto depth_end = std::chrono::high_resolution_clock::now();
         last_depth_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
