@@ -786,9 +786,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int local_extension = extension + se_ext;
         int new_depth = depth + local_extension - 1;
 
+        const bool gives_check = board.inCheck();
+
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
-                          depth >= 3 && !in_singular_search &&
-                          new_depth > 1 && !givesCheck();
+                  depth >= 3 && !in_singular_search &&
+                  new_depth > 1 && !gives_check;
 
         if (can_reduce) {
             int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
