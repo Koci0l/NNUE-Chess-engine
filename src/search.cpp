@@ -1242,6 +1242,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 aspiration_failed_high = false;
                 delta *= 2;
                 best_score = score;
+                best_move  = depth_best_move;
                 if (delta > 500)
                     delta = MATE_SCORE;
             } else if (score >= aspiration_beta && aspiration_beta < MATE_SCORE) {
