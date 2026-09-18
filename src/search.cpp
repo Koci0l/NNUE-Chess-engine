@@ -296,9 +296,15 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
     return out;
 }
 
-std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
+std::vector<chess::Move> extractPV(chess::Board board, chess::Move best_move, int max_depth) {
     std::vector<chess::Move> pv;
-    for (int i = 0; i < max_depth; ++i) {
+    
+    if (best_move != chess::Move()) {
+        pv.push_back(best_move);
+        board.makeMove(best_move);
+    }
+
+    for (int i = 1; i < max_depth; ++i) {
         TTEntry entry;
         if (!peekTT(getZobristHash(board), entry) || entry.best_move == 0)
             break;
@@ -1223,7 +1229,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 if (stats.stopped)
                     goto search_done;
 
-                if (eval > score) {
+                if (eval >= score) {
                     score = eval;
                     depth_best_move = move;
                 }
@@ -1242,7 +1248,6 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 aspiration_failed_high = false;
                 delta *= 2;
                 best_score = score;
-                best_move  = depth_best_move;
                 if (delta > 500)
                     delta = MATE_SCORE;
             } else if (score >= aspiration_beta && aspiration_beta < MATE_SCORE) {
@@ -1297,7 +1302,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             }
 
             std::string pv_str;
-            for (const auto& pm : extractPV(board, depth)) {
+            for (const auto& pm : extractPV(board, best_move, depth)) {
                 pv_str += chess::uci::moveToUci(pm);
                 pv_str += " ";
             }
