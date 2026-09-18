@@ -15,7 +15,9 @@ bool g_silent = false;
 bool g_use_policy = true;
 bool g_chess960 = false;
 
-static int lmr_reductions[64][64];
+constexpr int LMR_SCALE = 256;
+
+static int lmr_table[64][64];
 
 // Rounded tuned values
 constexpr double LMR_BASE = 0.6037;
@@ -35,7 +37,7 @@ void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
             double reduction = LMR_BASE + std::log(depth) * std::log(move_num) / LMR_DIVISOR;
-            lmr_reductions[depth][move_num] = static_cast<int>(reduction);
+            lmr_table[depth][move_num] = static_cast<int>(LMR_SCALE * reduction);
         }
     }
 }
@@ -791,17 +793,18 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                           new_depth > 1 && !givesCheck();
 
         if (can_reduce) {
-            int reduction = lmr_reductions[std::min(depth, 63)][std::min(move_count, 63)];
+            int reduction = lmr_table[std::min(depth, 63)][std::min(move_count, 63)];
             if (move == tt_move) reduction = 0;
-            else if (move_count <= 3) reduction = std::max(0, reduction - 1);
-            if (!is_pv_node) reduction += 1;
-            if (!improving) reduction += 1;
-            if (cutNode) reduction += LMR_CUTNODE_EXTRA;
+            else if (move_count <= 3) reduction = std::max(0, reduction - LMR_SCALE);
+            if (!is_pv_node) reduction += LMR_SCALE;
+            if (!improving) reduction += LMR_SCALE;
+            if (cutNode) reduction += LMR_CUTNODE_EXTRA * LMR_SCALE;
 
             int combined_hist = getCombinedHist(side_to_move, move, moved_piece,
                                                 ply_from_root, ss);
-            reduction -= std::clamp(combined_hist / 4096, -2, 2);
-            reduction = std::clamp(reduction, 0, new_depth - 1);
+            reduction -= std::clamp(combined_hist * LMR_SCALE / 4096,
+                                    -2 * LMR_SCALE, 2 * LMR_SCALE);
+            reduction = std::clamp(reduction / LMR_SCALE, 0, new_depth - 1);
 
             if (reduction > 0) {
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
@@ -1173,8 +1176,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                     if (can_reduce_root) {
                         int move_no = root_move_count + 1;
-                        reduction = lmr_reductions[std::min(depth, 63)]
-                                                 [std::min(move_no, 63)];
+                        reduction = lmr_table[std::min(depth, 63)]
+                                            [std::min(move_no, 63)];
 
                         if (rootPolicy.ok) {
                             int idx = rootPolicy.find(move);
@@ -1184,11 +1187,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                                 float adj = -0.85f * rel;
                                 adj = std::clamp(adj, -2.0f, 3.0f);
                                 adj *= sharp;
-                                reduction += int(std::lround(adj));
+                                reduction += int(std::lround(adj)) * LMR_SCALE;
                             }
                         }
-
-                        reduction = std::clamp(reduction, 0, std::max(0, new_depth - 1));
+                        reduction = std::clamp(reduction / LMR_SCALE, 0,
+                                               std::max(0, new_depth - 1));
                     }
 
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
