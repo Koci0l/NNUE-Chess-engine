@@ -97,7 +97,7 @@ static inline void updateCorrection(chess::Color side, uint64_t pawn_key,
 }
 
 bool isDrawByRepetition(const chess::Board& board) {
-    return board.isRepetition(1);
+    return board.isRepetition(2);
 }
 
 bool isDrawByFiftyMove(const chess::Board& board) {
@@ -319,7 +319,7 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
         pv.push_back(move);
         board.makeMove(move);
 
-        if (board.isRepetition(1) || board.halfMoveClock() >= 100)
+        if (board.isRepetition(2) || board.halfMoveClock() >= 100)
             break;
 
         chess::Movelist next_moves;
