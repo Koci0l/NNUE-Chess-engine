@@ -658,8 +658,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                     return probcut_value;
                 }
 
-                if (tm && tm->should_stop())
+                if (tm && tm->should_stop()) {
+                    stats.stopped = true;
                     break;
+                }
             }
         }
     }
@@ -996,6 +998,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     int best_score = -MATE_SCORE;
     double last_depth_ms = 100.0;
 
+    // Committed ONLY when an iteration completes and is stored to the TT.
+    // search_done() returns these, so the bestmove can never diverge from the
+    // last printed PV when a time stop abandons an in-progress aspiration
+    // search (e.g. an unverified fail-high committing a junk move).
+    chess::Move verified_best_move = best_move;
+    int verified_best_score       = -MATE_SCORE;
+
     const bool root_in_check = board.inCheck();
 
     SearchStack ss[MAX_PLY + 10];
@@ -1210,7 +1219,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                         }
                     }
 
-                    if (eval > alpha && eval < beta) {
+                    // Full-window re-search whenever a null-window search
+                    // beats alpha, INCLUDING when it claims a cutoff
+                    // (eval >= beta). Skipping the re-search for eval >= beta
+                    // let an LMR/TT artifact break the root loop as a bogus
+                    // fail-high and get committed as best_move unverified.
+                    if (eval > alpha) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
                                           thread, &tm, stats, true, move, ss,
                                           chess::Move(), false);
@@ -1220,7 +1234,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 board.unmakeMove(move);
                 thread.accumulatorStack.pop();
 
-                if (stats.stopped)
+                // A stop that slipped through without setting stats.stopped
+                // (e.g. fired inside the last nested call of this root move's
+                // sub-search) must not let a partial/late eval be recorded.
+                if (stats.stopped || tm.should_stop())
                     goto search_done;
 
                 if (eval > score) {
@@ -1263,6 +1280,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         best_score = score;
         best_move = depth_best_move;
+
+        verified_best_move  = best_move;
+        verified_best_score = best_score;
 
         {
             TTFlag root_flag;
@@ -1338,7 +1358,21 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     }
 
 search_done:
-    if (score_out) *score_out = best_score;
+    if (score_out) *score_out = verified_best_score;
     if (nodes_out) *nodes_out = stats.nodes;
-    return best_move;
+
+    // Sanity guard: the returned bestmove must be the first move of the PV in
+    // the root TT (what the info lines print). If not, the verified/TT
+    // bookkeeping is broken somewhere — shout instead of hanging a piece.
+    if (!g_silent) {
+        std::vector<chess::Move> root_pv = extractPV(board, 1);
+        if (!root_pv.empty() && root_pv[0] != verified_best_move) {
+            std::cout << "info string bestmove_mismatch"
+                      << " returned " << chess::uci::moveToUci(verified_best_move)
+                      << " pv " << chess::uci::moveToUci(root_pv[0])
+                      << std::endl;
+        }
+    }
+
+    return verified_best_move;
 }
