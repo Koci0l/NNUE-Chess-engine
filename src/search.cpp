@@ -48,6 +48,11 @@ constexpr int SE_MARGIN_PER_DEPTH = 2;
 constexpr int SE_DOUBLE_BIAS = 55;
 constexpr int SE_TRIPLE_BIAS = 120;
 
+// NMP verification search: at high depth a null-move cutoff can be false
+// (zugzwang-ish positions where static_eval >= beta is misleading). Re-search
+// at reduced depth with NMP disabled until ply reaches the gate.
+constexpr int NMP_VERIFY_MIN_DEPTH = 16;
+
 constexpr int PROBCUT_MIN_DEPTH = 5;
 constexpr int PROBCUT_BETA_MARGIN = 150;
 constexpr int PROBCUT_DEPTH_SUBTRACTOR = 4;
@@ -552,6 +557,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     // Null move pruning
     if (allow_null && !in_check && !is_pv_node && !in_singular_search &&
+        ply_from_root >= thread.nmp_min_ply &&
         depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta) {
         int R = 3 + depth / 3 + (improving ? 1 : 0);
         R = std::min(R, depth - 1);
@@ -576,7 +582,36 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         if (null_score >= beta) {
             if (null_score >= MATE_SCORE - 100) return beta;
-            return null_score;
+
+            // NMP verification search (Stockfish-style): at high depth a null
+            // cutoff can be false. Re-search the ORIGINAL position (board is
+            // already un-made back above) at reduced depth with NMP disabled
+            // until ply reaches nmp_min_ply, so the subtree cannot null-prune
+            // below the verification depth. nmp_min_ply != 0 also blocks a
+            // nested verification inside the subtree.
+            if (depth >= NMP_VERIFY_MIN_DEPTH && thread.nmp_min_ply == 0 &&
+                std::abs(beta) < MATE_SCORE - 200) {
+                int saved_nmp_min_ply = thread.nmp_min_ply;
+                thread.nmp_min_ply = ply_from_root + 3 * (depth - R) / 4;
+
+                int verify_score = alphaBeta(board, depth - R, beta - 1, beta,
+                                             ply_from_root, thread, tm, stats,
+                                             /*allow_null=*/false,
+                                             chess::Move(), ss, chess::Move(),
+                                             !cutNode);
+
+                thread.nmp_min_ply = saved_nmp_min_ply;
+
+                if (stats.stopped)
+                    return alpha;
+
+                if (verify_score >= beta)
+                    return null_score;   // cutoff verified
+                // Verification failed: fall through to the normal move loop
+                // instead of returning a bogus null-move cutoff.
+            } else {
+                return null_score;
+            }
         }
     }
 
@@ -973,8 +1008,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         return chess::Move();
 
     if (moves.size() == 1) {
-        if (!g_silent)
+        if (!g_silent) {
             std::cout << "info string only move" << std::endl;
+            // Fastchess needs an info line with a score to record the move
+            // (score/PV/depth for PGN + adjudication); without it, it logs
+            // "No info line available to extract score" warnings.
+            std::cout << "info depth 1 score cp " << scaleNNUE(g_nnue.evaluate(board, thread))
+                      << " nodes 1 nps 0 time 0 pv "
+                      << chess::uci::moveToUci(moves[0], board.chess960()) << std::endl;
+        }
         if (score_out) *score_out = 0;
         if (nodes_out) *nodes_out = 0;
         return moves[0];
@@ -1017,6 +1059,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
     SearchStats stats;
     stats.reset();
+
+    thread.nmp_min_ply = 0;
 
     if (node_limit > 0)
         tm.set_node_limit(node_limit, &stats.nodes);

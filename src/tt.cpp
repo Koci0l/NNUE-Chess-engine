@@ -65,7 +65,11 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
         // Collision: Use a priority score. 
         int age_diff = (uint8_t)(current_generation - entry.generation);
         int entry_priority = entry.depth - (age_diff * 2); 
-        replace = (depth >= entry_priority);
+        // PV stores (currently only the root store) must always win the slot:
+        // extractPV() walks the root entry for the printed PV and the
+        // bestmove-vs-PV consistency check, so a colliding entry must not
+        // block the root store.
+        replace = (depth >= entry_priority) || pv;
     }
 
     if (replace) {

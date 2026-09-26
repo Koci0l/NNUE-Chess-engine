@@ -12,7 +12,12 @@ struct SearchStack;
 // ThreadInfo definition
 struct ThreadInfo {
     AccumulatorStack accumulatorStack;
-    
+
+    // NMP verification search (Stockfish-style nmpMinPly): while a null-move
+    // cutoff is being verified, null move pruning is disabled at every ply
+    // below this value. 0 = not verifying.
+    int nmp_min_ply = 0;
+
     void reset(const chess::Board& board) {
         accumulatorStack.resetAccumulators(board);
     }
