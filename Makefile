@@ -10,10 +10,10 @@ PYTHON ?= python
 # Network files
 # ============================================================================
 
-EVALFILE ?= 768-1024x2-1-8.bin
+EVALFILE ?= quantised-v14.bin
 
 # Big policy net.
-POLICYFILE ?= quantised-dual-layer-hard-2048.bin
+POLICYFILE ?= Policy-big.bin
 
 # Small 64hl policy net.
 POLICYFILE_SMALL ?= quantised-64.bin
