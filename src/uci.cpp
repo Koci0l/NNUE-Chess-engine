@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <fstream>
 #include <random>
+#include <memory>
 
 #ifndef __has_include
 #define __has_include(x) 0
@@ -680,7 +681,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
 
 void uci_loop(int argc, char* argv[]) {
     chess::Board board;
-    ThreadInfo thread;
+    auto thread_storage = std::make_unique<ThreadInfo>();
+    ThreadInfo& thread = *thread_storage;
 
     initZobrist();
     initLMR();

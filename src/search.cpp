@@ -685,11 +685,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
 
-    RootPolicy pv_policy;
+    chess::Move pv_policy_move;
+    float pv_policy_prob = 0.0f;
     bool pv_policy_ok = false;
     if (pv_ext_budget > 0 && is_pv_node && !in_check && !in_singular_search &&
         g_use_policy && g_policy_pv_extension) {
-        pv_policy_ok = computeSmallRootPolicy(board, pv_policy);
+        pv_policy_ok = g_policy_small.rootAdvice(board, pv_policy_move, pv_policy_prob);
     }
 
     // Policy can be disabled globally with:
@@ -803,7 +804,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         const bool ab_pv_candidate = move_count == 1 ||
                                      (tt_move != chess::Move() && move == tt_move);
-        const bool policy_pv_candidate = pv_policy_ok && move == pv_policy.top_any;
+        const bool policy_pv_candidate = pv_policy_ok && move == pv_policy_move;
         const bool extend_policy_pv = pv_ext_budget > 0 && pv_policy_ok &&
                                       is_pv_node && !in_check && !in_singular_search &&
                                       se_ext >= 0 &&
