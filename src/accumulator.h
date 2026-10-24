@@ -10,9 +10,9 @@ class Square;
 class Move;
 }
 
-#if defined(AVX512F)
+#if defined(__AVX512F__) || defined(AVX512F)
 #define ALIGNMENT alignas(64)
-#elif defined(AVX2) || defined(AVX)
+#elif defined(__AVX2__) || defined(AVX2) || defined(__AVX__) || defined(AVX)
 #define ALIGNMENT alignas(32)
 #else
 #define ALIGNMENT alignas(16)

@@ -408,6 +408,9 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
         std::cout << "option name UsePolicy type check default true" << std::endl;
+        std::cout << "option name PolicyPVExtension type check default false" << std::endl;
+        std::cout << "option name PolicyPVStartDepth type spin default 10 min 2 max 64" << std::endl;
+        std::cout << "option name PolicyPVExtraPlies type spin default 24 min 1 max 64" << std::endl;
         std::cout << "option name UCI_Chess960 type check default false" << std::endl;
         std::cout << "uciok" << std::endl;
         std::cout.flush();
@@ -451,6 +454,12 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             }
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UsePolicy" && tokens[3] == "value") {
             g_use_policy = parse_bool(tokens[4]);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyPVExtension" && tokens[3] == "value") {
+            g_policy_pv_extension = parse_bool(tokens[4]);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyPVStartDepth" && tokens[3] == "value") {
+            g_policy_pv_start_depth = std::clamp(std::stoi(tokens[4]), 2, 64);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "PolicyPVExtraPlies" && tokens[3] == "value") {
+            g_policy_pv_extra_plies = std::clamp(std::stoi(tokens[4]), 1, 64);
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UCI_Chess960" && tokens[3] == "value") {
             g_chess960 = parse_bool(tokens[4]);
 

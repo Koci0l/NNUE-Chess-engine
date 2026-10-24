@@ -14,6 +14,9 @@
 bool g_silent = false;
 bool g_use_policy = true;
 bool g_chess960 = false;
+bool g_policy_pv_extension = false;
+int g_policy_pv_start_depth = 10;
+int g_policy_pv_extra_plies = 24;
 
 constexpr int LMR_SCALE = 256;
 
@@ -333,6 +336,7 @@ std::vector<chess::Move> extractPV(chess::Board board, int max_depth) {
 int quiescence(chess::Board& board, int alpha, int beta,
                ThreadInfo& thread, int ply_from_root, SearchStats& stats) {
     stats.nodes++;
+    stats.seldepth = std::max(stats.seldepth, ply_from_root);
 
     if (stats.stopped)
         return alpha;
@@ -439,8 +443,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
 int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_root,
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss, chess::Move excluded_move,
-              bool cutNode) {
+              bool cutNode, int pv_ext_budget) {
     stats.nodes++;
+    stats.seldepth = std::max(stats.seldepth, ply_from_root);
 
     alpha = std::max(alpha, -MATE_SCORE + ply_from_root);
     beta  = std::min(beta,   MATE_SCORE - ply_from_root - 1);
@@ -449,6 +454,9 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     if (ply_from_root >= MAX_PLY)
         return scaleNNUE(g_nnue.evaluate(board, thread));
+
+    pv_ext_budget = std::clamp(pv_ext_budget, 0,
+                               std::max(0, MAX_PLY - ply_from_root - 1));
 
     if (stats.stopped || (tm && tm->should_stop())) {
         stats.stopped = true;
@@ -677,6 +685,13 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     chess::Color side_to_move = board.sideToMove();
     MovePickerContext mpCtx(tt_move, counter_move, side_to_move, ply_from_root, ss);
 
+    RootPolicy pv_policy;
+    bool pv_policy_ok = false;
+    if (pv_ext_budget > 0 && is_pv_node && !in_check && !in_singular_search &&
+        g_use_policy && g_policy_pv_extension) {
+        pv_policy_ok = computeSmallRootPolicy(board, pv_policy);
+    }
+
     // Policy can be disabled globally with:
     // setoption name UsePolicy value false
     MovePicker mp(board, mpCtx, depth, false, /*use_policy=*/g_use_policy);
@@ -785,12 +800,41 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         ss[ply_from_root].moved_piece = moved_piece;
 
         int eval;
-        int local_extension = extension + se_ext;
-        int new_depth = depth + local_extension - 1;
 
-        bool can_reduce = !in_check && is_quiet && move_count > 1 &&
+        const bool ab_pv_candidate = move_count == 1 ||
+                                     (tt_move != chess::Move() && move == tt_move);
+        const bool policy_pv_candidate = pv_policy_ok && move == pv_policy.top_any;
+        const bool extend_policy_pv = pv_ext_budget > 0 && pv_policy_ok &&
+                                      is_pv_node && !in_check && !in_singular_search &&
+                                      se_ext >= 0 &&
+                                      (ab_pv_candidate || policy_pv_candidate);
+        const int policy_ext = extend_policy_pv ? 1 : 0;
+        const int child_pv_ext_budget = extend_policy_pv ? pv_ext_budget - 1 : 0;
+        if (policy_ext)
+            stats.policy_pv_extensions++;
+
+        int local_extension = extension + se_ext;
+        int new_depth = depth + local_extension - 1 + policy_ext;
+
+        bool can_reduce = !policy_ext && !in_check && is_quiet && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
                           new_depth > 1 && !givesCheck();
+
+        auto research_full_pv = [&]() -> int {
+            int research_depth = new_depth;
+            int research_budget = child_pv_ext_budget;
+
+            if (!policy_ext && pv_ext_budget > 0 && pv_policy_ok &&
+                is_pv_node && se_ext >= 0) {
+                research_depth++;
+                research_budget = pv_ext_budget - 1;
+                stats.policy_pv_extensions++;
+            }
+
+            return -alphaBeta(board, research_depth, -beta, -alpha,
+                              ply_from_root + 1, thread, tm, stats, true, move, ss,
+                              chess::Move(), false, research_budget);
+        };
 
         if (can_reduce) {
             int reduction = lmr_table[std::min(depth, 63)][std::min(move_count, 63)];
@@ -809,36 +853,33 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
             if (reduction > 0) {
                 eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), true);
+                                  chess::Move(), true, child_pv_ext_budget);
                 if (eval > alpha) {
                     eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                       ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                      chess::Move(), !cutNode);
+                                      chess::Move(), !cutNode, child_pv_ext_budget);
                 }
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), !cutNode);
+                                  chess::Move(), !cutNode, child_pv_ext_budget);
             }
 
             if (eval > alpha && eval < beta) {
-                eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                  ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), false);
+                eval = research_full_pv();
             }
         } else {
             if (move_count == 1) {
                 eval = -alphaBeta(board, new_depth, -beta, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), is_pv_node ? false : !cutNode);
+                                  chess::Move(), is_pv_node ? false : !cutNode,
+                                  child_pv_ext_budget);
             } else {
                 eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha,
                                   ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                  chess::Move(), true);
+                                  chess::Move(), true, child_pv_ext_budget);
                 if (eval > alpha && eval < beta) {
-                    eval = -alphaBeta(board, new_depth, -beta, -alpha,
-                                      ply_from_root + 1, thread, tm, stats, true, move, ss,
-                                      chess::Move(), false);
+                    eval = research_full_pv();
                 }
             }
         }
@@ -1014,7 +1055,24 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
     advanceTTGeneration();
 
-    for (int depth = 1; depth <= max_depth; ++depth) {
+    const int policy_pv_extra_plies =
+        std::clamp(g_policy_pv_extra_plies, 0, MAX_PLY - 1);
+    const bool policy_pv_ready = g_use_policy && g_policy_pv_extension &&
+                                 g_policy_small.loaded && policy_pv_extra_plies > 0 &&
+                                 g_policy_pv_start_depth > 0;
+
+    int depth = 1;
+    bool policy_pv_second_pass = false;
+    while (depth <= max_depth) {
+        const bool policy_pv_active =
+            policy_pv_ready &&
+            (depth > g_policy_pv_start_depth ||
+             (depth == g_policy_pv_start_depth && policy_pv_second_pass));
+        const int pv_ext_budget = policy_pv_active ? policy_pv_extra_plies : 0;
+
+        stats.seldepth = 0;
+        stats.policy_pv_extensions = 0;
+
         auto depth_start = std::chrono::high_resolution_clock::now();
 
         if (depth > 1 && !tm.should_continue_depth(depth, last_depth_ms))
@@ -1165,7 +1223,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss);
+                                      thread, &tm, stats, true, move, ss,
+                                      chess::Move(), false, pv_ext_budget);
                 } else {
                     int new_depth = depth - 1;
                     int reduction = 0;
@@ -1213,7 +1272,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     if (eval > alpha && eval < beta) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
                                           thread, &tm, stats, true, move, ss,
-                                          chess::Move(), false);
+                                          chess::Move(), false, pv_ext_budget);
                     }
                 }
 
@@ -1296,13 +1355,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             }
 
             std::string pv_str;
-            for (const auto& pm : extractPV(board, depth)) {
+            const int pv_limit = std::min(MAX_PLY, std::max(depth, stats.seldepth));
+            for (const auto& pm : extractPV(board, pv_limit)) {
                 pv_str += chess::uci::moveToUci(pm);
                 pv_str += " ";
             }
 
             std::cout << "info"
                       << " depth " << depth
+                      << " seldepth " << stats.seldepth
                       << " score " << score_str
                       << " nodes " << stats.nodes
                       << " nps "   << nps
@@ -1335,6 +1396,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
         if (tm.should_stop())
             break;
+
+        if (policy_pv_ready && depth == g_policy_pv_start_depth &&
+            !policy_pv_second_pass) {
+            policy_pv_second_pass = true;
+            continue;
+        }
+
+        policy_pv_second_pass = false;
+        ++depth;
     }
 
 search_done:

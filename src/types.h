@@ -58,9 +58,14 @@ struct ScoredMove {
 
 struct SearchStats {
     uint64_t nodes = 0;
+    int seldepth = 0;
+    uint64_t policy_pv_extensions = 0;
     bool stopped = false;
-    void reset() { 
-        nodes = 0; stopped = false; 
+    void reset() {
+        nodes = 0;
+        seldepth = 0;
+        policy_pv_extensions = 0;
+        stopped = false;
     }
 };
 

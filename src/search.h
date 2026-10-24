@@ -9,6 +9,10 @@ extern bool g_silent;
 extern bool g_use_policy;
 extern bool g_chess960;
 
+extern bool g_policy_pv_extension;
+extern int g_policy_pv_start_depth;
+extern int g_policy_pv_extra_plies;
+
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);
 
@@ -19,7 +23,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
               ThreadInfo& thread, const TimeManager* tm, SearchStats& stats, bool allow_null,
               chess::Move previous_move, SearchStack* ss,
               chess::Move excluded_move = chess::Move(),
-              bool cutNode = false);
+              bool cutNode = false, int pv_ext_budget = 0);
 
 chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeManager& tm,
                    int64_t node_limit = 0, int* score_out = nullptr, uint64_t* nodes_out = nullptr);
