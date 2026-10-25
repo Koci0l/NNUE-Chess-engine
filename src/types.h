@@ -34,7 +34,24 @@ inline int pieceValue(chess::PieceType pt) {
     return (idx >= 0 && idx < 6) ? values[idx] : 0;
 }
 
+// Castling is encoded as king_from -> rook_from, so board.at(move.to()) is one of
+// *our own* rooks. Every "is the destination occupied => it is a capture" test has
+// to special-case it, otherwise castling is scored/ordered/pruned like a
+// king-takes-rook capture.
+inline bool isCastlingMove(const chess::Move& move) {
+    return move.typeOf() == chess::Move::CASTLING;
+}
+
+// Noisy = capture, en passant or promotion. Castling is a quiet move.
+inline bool isTacticalMove(const chess::Board& board, const chess::Move& move) {
+    if (isCastlingMove(move)) return false;
+    return board.at(move.to()) != chess::Piece::NONE ||
+           move.typeOf() == chess::Move::PROMOTION ||
+           move.typeOf() == chess::Move::ENPASSANT;
+}
+
 inline bool isQuietMove(const chess::Board& board, const chess::Move& move) {
+    if (isCastlingMove(move)) return true;
     return board.at(move.to()) == chess::Piece::NONE &&
            move.typeOf() != chess::Move::PROMOTION &&
            move.typeOf() != chess::Move::ENPASSANT;

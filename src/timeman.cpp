@@ -14,8 +14,13 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
     start_time = std::chrono::high_resolution_clock::now();
 
     if (movetime_ms > 0) {
-        soft_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
-        hard_limit_ms = movetime_ms - MOVE_OVERHEAD_MS;
+        // movetime <= MOVE_OVERHEAD_MS used to produce a negative budget, which
+        // made should_stop() true on the very first node: the engine then
+        // returned moves[0] without searching anything. Always allow the
+        // minimum thinking time.
+        const int budget = std::max(MIN_THINKING_TIME, movetime_ms - MOVE_OVERHEAD_MS);
+        soft_limit_ms = budget;
+        hard_limit_ms = budget;
         return;
     }
 
@@ -40,7 +45,8 @@ void TimeManager::init(int time_ms, int inc_ms, int mtg, int fixed_movetime, int
     base_time = std::min(base_time, available * 2 / 5);
 
     soft_limit_ms = std::max(MIN_THINKING_TIME, base_time);
-    hard_limit_ms = std::max(soft_limit_ms, std::min(base_time * 5, available * 3 / 5));
+    hard_limit_ms = std::max(soft_limit_ms + MIN_THINKING_TIME,
+                             std::min(base_time * 5, available * 3 / 5));
 }
 
 void TimeManager::set_node_limit(int64_t nodes, const uint64_t* counter) {

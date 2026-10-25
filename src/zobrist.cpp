@@ -1,12 +1,16 @@
-    #include "zobrist.h"
+#include "zobrist.h"
 
     void initZobrist() {
 
     }
 
-    uint64_t getZobristHash(const chess::Board& board) {
-        return board.zobrist();
-    }
+uint64_t getZobristHash(const chess::Board& board) {
+    // board.zobrist() recomputes the whole key from scratch (piece loop + magic
+    // lookups) and is called at every search node. board.hash() returns the key
+    // the board already maintains incrementally while making/unmaking moves -
+    // same value, a few hundred times cheaper.
+    return board.hash();
+}
 
     uint64_t getPawnHash(const chess::Board& board) {
     uint64_t wp = board.pieces(chess::PieceType::PAWN, chess::Color::WHITE).getBits();

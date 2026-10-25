@@ -33,6 +33,9 @@ constexpr int ASP_DELTA = 20;
 // Extra LMR ply on predicted cut nodes
 constexpr int LMR_CUTNODE_EXTRA = 1;
 
+// Maximum number of plies a root move may be reduced by (root LMR).
+constexpr int ROOT_LMR_MAX_REDUCTION = 2;
+
 void initLMR() {
     for (int depth = 1; depth < 64; ++depth) {
         for (int move_num = 1; move_num < 64; ++move_num) {
@@ -47,6 +50,12 @@ constexpr int SE_DEPTH_TOL = 3;
 constexpr int SE_MARGIN_PER_DEPTH = 2;
 constexpr int SE_DOUBLE_BIAS = 55;
 constexpr int SE_TRIPLE_BIAS = 120;
+constexpr bool SE_ALLOW_TRIPLE_EXTENSION = false;
+constexpr int MAX_EXTENSION_PER_NODE = 2;
+
+// Search one ply shallower the first time a non-PV position is seen (no TT
+// move). Off by default: it makes the reported depth optimistic.
+constexpr bool FIRST_VISIT_DEPTH_REDUCTION = false;
 
 constexpr int PROBCUT_MIN_DEPTH = 5;
 constexpr int PROBCUT_BETA_MARGIN = 150;
@@ -63,7 +72,7 @@ constexpr int MAX_CAPTURES_TRACKED = 32;
 
 constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
-constexpr int RAZOR_MARGIN_D3 = 700;
+constexpr int RAZOR_MAX_DEPTH = 2;
 
 inline int scaleNNUE(int raw_score) {
     return raw_score;
@@ -118,6 +127,7 @@ struct CaptureSearchInfo {
 static inline bool extractCaptureInfo(const chess::Board& board,
                                       const chess::Move& move,
                                       CaptureSearchInfo& info) {
+    if (isCastlingMove(move)) return false;  // "to" is our own rook square
     chess::Piece attacker = board.at(move.from());
     chess::Piece captured;
     if (move.typeOf() == chess::Move::ENPASSANT) {
@@ -275,10 +285,14 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
                         tt_move, cutNode);
 
     if (val < singular_beta) {
+        // 1 ply, 2 when the move is clearly better than everything else.
+        // (A "triple" extension grows the tree exponentially and was the main
+        // reason the engine's score/depth curve was unstable.)
         int ext = 1;
         if (!is_pv_node && val + SE_DOUBLE_BIAS < singular_beta)
             ext += 1;
-        if (!is_pv_node && is_quiet_move && val + SE_TRIPLE_BIAS < singular_beta)
+        if (!is_pv_node && is_quiet_move && SE_ALLOW_TRIPLE_EXTENSION &&
+            val + SE_TRIPLE_BIAS < singular_beta)
             ext += 1;
         out.ext = ext;
         return out;
@@ -450,7 +464,11 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (ply_from_root >= MAX_PLY)
         return scaleNNUE(g_nnue.evaluate(board, thread));
 
-    if (stats.stopped || (tm && tm->should_stop())) {
+    if (stats.stopped) return alpha;
+    // Polling the clock at every single node costs a measurable fraction of the
+    // node rate; once every 1024 nodes is far more than enough (the root also
+    // polls between moves).
+    if (tm && (stats.nodes & 1023) == 0 && tm->should_stop()) {
         stats.stopped = true;
         return alpha;
     }
@@ -498,9 +516,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    // IID reduction when no TT move
-    if (!in_singular_search && !is_pv_node && depth >= 4 &&
-        tt_move == chess::Move() && !in_check) {
+    // Reduce first-visit nodes (no TT move). This is NOT IID (nothing is
+    // searched to fill the TT, the node is simply searched one ply shallower),
+    // so it silently costs a ply in every fresh non-PV subtree. Kept behind a
+    // flag so it can be A/B tested.
+    if (FIRST_VISIT_DEPTH_REDUCTION && !in_singular_search && !is_pv_node &&
+        depth >= 4 && tt_move == chess::Move() && !in_check) {
         depth--;
     }
 
@@ -540,9 +561,12 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     }
 
     // Razoring
-    if (!is_pv_node && !in_check && !in_singular_search && depth <= 3) {
-        int razor_margin = (depth == 1) ? RAZOR_MARGIN_D1 :
-                           (depth == 2) ? RAZOR_MARGIN_D2 : RAZOR_MARGIN_D3;
+    // Only at depth 1-2. At depth 3 a 700cp margin means "if my static eval is
+    // 7 pawns below alpha, trust a capture-only search" - that throws away real
+    // defensive resources and is a direct source of blunders.
+    if (!is_pv_node && !in_check && !in_singular_search &&
+        depth <= RAZOR_MAX_DEPTH) {
+        int razor_margin = (depth == 1) ? RAZOR_MARGIN_D1 : RAZOR_MARGIN_D2;
         if (static_eval + razor_margin <= alpha) {
             int razor_score = quiescence(board, alpha, beta, thread, ply_from_root, stats);
             if (razor_score <= alpha)
@@ -1017,6 +1041,9 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
     for (int depth = 1; depth <= max_depth; ++depth) {
         auto depth_start = std::chrono::high_resolution_clock::now();
 
+        // Depth 1 runs without a clock so that it can never be cut short.
+        const TimeManager* root_tm = (depth == 1) ? nullptr : &tm;
+
         if (depth > 1 && !tm.should_continue_depth(depth, last_depth_ms))
             break;
 
@@ -1031,10 +1058,19 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         bool aspiration_failed_low = false;
         bool aspiration_failed_high = false;
 
+        // Window anchor. Kept separate from best_score so that an iteration
+        // which is interrupted half way (time out) can never leak a bound into
+        // the move/score we return: best_move/best_score always describe the
+        // last *completed* depth.
+        int aspiration_center = best_score;
+
+        // Move searched first in the current pass. Ordering only - never the result.
+        chess::Move root_first_move = best_move;
+
         while (true) {
-            if (depth >= 5 && std::abs(best_score) < MATE_SCORE - 100) {
-                aspiration_alpha = std::max(-MATE_SCORE, best_score - delta);
-                aspiration_beta  = std::min( MATE_SCORE, best_score + delta);
+            if (depth >= 5 && std::abs(aspiration_center) < MATE_SCORE - 100) {
+                aspiration_alpha = std::max(-MATE_SCORE, aspiration_center - delta);
+                aspiration_beta  = std::min( MATE_SCORE, aspiration_center + delta);
             } else {
                 aspiration_alpha = -MATE_SCORE;
                 aspiration_beta  =  MATE_SCORE;
@@ -1054,13 +1090,12 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
             root_moves.reserve(moves.size());
 
             auto scoreRootMove = [&](const chess::Move& move, bool& is_quiet_out) -> int {
-                if (move == best_move && best_move != chess::Move()) {
+                if (move == root_first_move && root_first_move != chess::Move()) {
                     is_quiet_out = isQuietMove(board, move);
                     return 3000000;
                 }
 
-                bool is_capture = board.at(move.to()) != chess::Piece::NONE ||
-                                  move.typeOf() == chess::Move::ENPASSANT;
+                bool is_capture = isTacticalMove(board, move);
                 bool is_promo = move.typeOf() == chess::Move::PROMOTION;
                 is_quiet_out = !is_capture && !is_promo;
 
@@ -1140,7 +1175,11 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 chess::Move move = root_moves[rmi].move;
                 bool root_is_quiet = root_moves[rmi].is_quiet;
 
-                if (tm.should_stop()) goto search_done;
+                // Depth 1 must always finish: otherwise (tiny movetime, a
+                // negative time budget, a node limit reached on the first node)
+                // we would return moves[0] / the policy move, i.e. a move that
+                // was never searched at all.
+                if (depth > 1 && tm.should_stop()) goto search_done;
 
                 chess::Piece root_piece = board.at(move.from());
 
@@ -1165,7 +1204,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     eval = -getDrawScore(1);
                 } else if (root_move_count == 0) {
                     eval = -alphaBeta(board, depth - 1, -beta, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss);
+                                      thread, root_tm, stats, true, move, ss);
                 } else {
                     int new_depth = depth - 1;
                     int reduction = 0;
@@ -1195,7 +1234,7 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     }
 
                     eval = -alphaBeta(board, new_depth - reduction, -alpha - 1, -alpha, 1,
-                                      thread, &tm, stats, true, move, ss,
+                                      thread, root_tm, stats, true, move, ss,
                                       chess::Move(), true);
 
                     if (reduction > 0) {
@@ -1205,14 +1244,14 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
 
                         if (eval > alpha - verify_margin) {
                             eval = -alphaBeta(board, new_depth, -alpha - 1, -alpha, 1,
-                                              thread, &tm, stats, true, move, ss,
+                                              thread, root_tm, stats, true, move, ss,
                                               chess::Move(), false);
                         }
                     }
 
                     if (eval > alpha && eval < beta) {
                         eval = -alphaBeta(board, new_depth, -beta, -alpha, 1,
-                                          thread, &tm, stats, true, move, ss,
+                                          thread, root_tm, stats, true, move, ss,
                                           chess::Move(), false);
                     }
                 }
@@ -1241,15 +1280,15 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                 aspiration_failed_low = true;
                 aspiration_failed_high = false;
                 delta *= 2;
-                best_score = score;
+                aspiration_center = score;
                 if (delta > 500)
                     delta = MATE_SCORE;
             } else if (score >= aspiration_beta && aspiration_beta < MATE_SCORE) {
                 aspiration_failed_high = true;
                 aspiration_failed_low = false;
                 delta *= 2;
-                best_score = score;
-                best_move = depth_best_move;
+                aspiration_center = score;
+                root_first_move = depth_best_move;  // re-order the re-search only
                 if (delta > 500)
                     delta = MATE_SCORE;
             } else {
