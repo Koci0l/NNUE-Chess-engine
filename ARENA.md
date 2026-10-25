@@ -127,6 +127,20 @@ printf 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\n' > openings.f
 ./arena --games 20 --policy-temp 0.8
 ```
 
+## Tips
+
+* A raw policy net (no search) is much weaker than even a depth-1 search. For
+  closer, more informative matches use `--depth 1`..`3`, a node budget, or a
+  small `--movetime`, and/or give the policy some randomness with
+  `--policy-temp`.
+* `--qs both` is a comparison tool: with few games the difference is pure noise
+  (look at the printed Elo interval). Use at least a few hundred games before
+  drawing conclusions.
+* The NNUE and policy nets must match the hidden sizes the binary was compiled
+  for (`KOCIOLEK_POLICY_HL`, `POLICY_SMALL_HL`); a size mismatch is reported as
+  a load error.
+* `--verbose` shows every move, including the random opening plies.
+
 ## Sample output
 
 ```
