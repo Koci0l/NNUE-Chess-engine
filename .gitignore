@@ -1,0 +1,8 @@
+# Build artifacts
+arena
+*.exe
+*.o
+
+# Generated embedded networks (see Makefile: make embed)
+src/policy_embed.h
+src/policy_embed_small.h

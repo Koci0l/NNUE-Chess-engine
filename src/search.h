@@ -9,6 +9,13 @@ extern bool g_silent;
 extern bool g_use_policy;
 extern bool g_chess960;
 
+// Quiescence-search switch.
+//   true  -> normal quiescence search at the leaves (default)
+//   false -> leaves are scored with the static NNUE eval only ("no qsearch")
+// Toggle at runtime from UCI ("option name UseQS", "qson" / "qsoff") or from
+// the arena app (--qs on|off|both).
+extern bool g_use_qs;
+
 void initLMR();
 void updateAccumulatorForMove(AccumulatorStack& accStack, chess::Board& board, const chess::Move& move);
 

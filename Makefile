@@ -50,7 +50,15 @@ CXXFLAGS += -DPOLICY_SMALL_HL=$(POLICY_SMALL_HL)
 
 TARGET ?= $(or $(EXE), Kociolek-2.2.exe)
 
+# Match runner: NNUE vs policy, with the quiescence-search switch.
+ARENA ?= arena
+
 SOURCES = $(wildcard src/*.cpp)
+
+# Everything except the two entry points (main.cpp / uci.cpp / arena.cpp) is
+# shared engine code. The arena does not link uci.cpp, so it never pulls in the
+# (huge) embedded policy blobs -- it always loads the nets from disk at runtime.
+ENGINE_SOURCES = $(filter-out src/main.cpp src/uci.cpp src/arena.cpp, $(SOURCES))
 
 all: $(TARGET)
 
@@ -73,11 +81,18 @@ $(TARGET): $(SOURCES) src/policy_embed.h src/policy_embed_small.h
 > $(CXX) $(CXXFLAGS) $(SOURCES) -o $(TARGET)
 
 # ============================================================================
+# NNUE vs Policy arena (loads both nets from disk, no embedding needed)
+# ============================================================================
+
+$(ARENA): $(ENGINE_SOURCES) src/arena.cpp
+> $(CXX) $(CXXFLAGS) $(ENGINE_SOURCES) src/arena.cpp -o $(ARENA)
+
+# ============================================================================
 # Clean
 # ============================================================================
 
 clean:
-> rm -f $(TARGET)
+> rm -f $(TARGET) $(ARENA)
 
 clean-embed:
 > rm -f src/policy_embed.h src/policy_embed_small.h

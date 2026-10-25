@@ -139,6 +139,8 @@ static void run_bench(ThreadInfo& thread) {
               << (g_policy_small.loaded ? "LOADED" : "MISSING")
               << " use_policy "
               << (g_use_policy ? "true" : "false")
+              << " use_qs "
+              << (g_use_qs ? "true" : "false")
               << std::endl;
 
     std::cout.flush();
@@ -408,6 +410,7 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
         std::cout << "option name PolicyFile type string default " << POLICYFILE << std::endl;
         std::cout << "option name PolicyFileSmall type string default " << POLICYFILE_SMALL << std::endl;
         std::cout << "option name UsePolicy type check default true" << std::endl;
+        std::cout << "option name UseQS type check default true" << std::endl;
         std::cout << "option name UCI_Chess960 type check default false" << std::endl;
         std::cout << "uciok" << std::endl;
         std::cout.flush();
@@ -451,6 +454,8 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             }
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UsePolicy" && tokens[3] == "value") {
             g_use_policy = parse_bool(tokens[4]);
+        } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UseQS" && tokens[3] == "value") {
+            g_use_qs = parse_bool(tokens[4]);
         } else if (tokens.size() >= 5 && tokens[1] == "name" && tokens[2] == "UCI_Chess960" && tokens[3] == "value") {
             g_chess960 = parse_bool(tokens[4]);
 
@@ -466,6 +471,14 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
     } else if (command == "policyon") {
         g_use_policy = true;
         std::cout << "info string UsePolicy true" << std::endl;
+        std::cout.flush();
+    } else if (command == "qsoff") {
+        g_use_qs = false;
+        std::cout << "info string UseQS false" << std::endl;
+        std::cout.flush();
+    } else if (command == "qson") {
+        g_use_qs = true;
+        std::cout << "info string UseQS true" << std::endl;
         std::cout.flush();
     } else if (command == "genfens" || command == "genfen") {
         int count = 1;

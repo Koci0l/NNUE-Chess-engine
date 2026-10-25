@@ -14,6 +14,7 @@
 bool g_silent = false;
 bool g_use_policy = true;
 bool g_chess960 = false;
+bool g_use_qs = true;
 
 constexpr int LMR_SCALE = 256;
 
@@ -342,6 +343,10 @@ int quiescence(chess::Board& board, int alpha, int beta,
 
     if (isDrawByRepetition(board) || isDrawByFiftyMove(board))
         return getDrawScore(ply_from_root);
+
+    // Quiescence switched off: leaves are scored statically.
+    if (!g_use_qs)
+        return scaleNNUE(g_nnue.evaluate(board, thread));
 
     bool in_check = board.inCheck();
 
