@@ -19,16 +19,17 @@ constexpr int LMR_SCALE = 256;
 
 static int lmr_table[64][64];
 
-// Rounded tuned values
-constexpr double LMR_BASE = 0.6037;
-constexpr double LMR_DIVISOR = 2.5755;
-constexpr int RFP_IMPROVING_MARGIN = 59;
-constexpr int RFP_NO_IMPROVING_MARGIN = 92;
-constexpr int FUTILITY_BASE_MARGIN = 102;
-constexpr int FUTILITY_PER_DEPTH_MARGIN = 85;
-constexpr int SEE_NOISY_MARGIN = 63;
-constexpr int SEE_QUIET_MARGIN = 56;
-constexpr int ASP_DELTA = 20;
+// Tuned values - reverted to more conservative / known-good.
+// Previous SPSA run made LMR too weak (base too low) causing horizon blunders.
+constexpr double LMR_BASE = 0.77;
+constexpr double LMR_DIVISOR = 2.37;
+constexpr int RFP_IMPROVING_MARGIN = 75;
+constexpr int RFP_NO_IMPROVING_MARGIN = 115;
+constexpr int FUTILITY_BASE_MARGIN = 120;
+constexpr int FUTILITY_PER_DEPTH_MARGIN = 80;
+constexpr int SEE_NOISY_MARGIN = 40;
+constexpr int SEE_QUIET_MARGIN = 35;
+constexpr int ASP_DELTA = 25;
 
 // Extra LMR ply on predicted cut nodes
 constexpr int LMR_CUTNODE_EXTRA = 1;
@@ -49,13 +50,13 @@ constexpr int SE_DOUBLE_BIAS = 55;
 constexpr int SE_TRIPLE_BIAS = 120;
 
 constexpr int PROBCUT_MIN_DEPTH = 5;
-constexpr int PROBCUT_BETA_MARGIN = 150;
+constexpr int PROBCUT_BETA_MARGIN = 180;
 constexpr int PROBCUT_DEPTH_SUBTRACTOR = 4;
 constexpr int PROBCUT_IMPROVING_MARGIN = 30;
 constexpr int PROBCUT_SEE_THRESHOLD = 100;
 constexpr int PROBCUT_MAX_MOVES = 3;
 
-constexpr int SPROBCUT_BETA_MARGIN = 350;
+constexpr int SPROBCUT_BETA_MARGIN = 300;
 constexpr int SPROBCUT_TT_DEPTH_SUBTRACTOR = 4;
 
 constexpr int MAX_QUIETS_TRACKED = 64;
@@ -749,22 +750,19 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         move_count++;
         chess::Piece moved_piece = board.at(move.from());
 
-        int check_cache = -1; // -1 unknown, 0 no check, 1 check
-        auto givesCheck = [&]() -> bool {
-            if (in_check || !is_quiet) return false;
-            if (check_cache < 0) {
-                check_cache =
-                    (board.givesCheck(move) != chess::CheckType::NO_CHECK) ? 1 : 0;
-            }
-            return check_cache == 1;
-        };
+        // Pre-compute whether this quiet move gives check - BEFORE makeMove.
+        // Using board state before move, since givesCheck queries from that board.
+        bool move_gives_check = false;
+        if (!in_check && is_quiet) {
+            move_gives_check = (board.givesCheck(move) != chess::CheckType::NO_CHECK);
+        }
 
-        // Futility pruning
+        // Futility pruning - never prune checking moves
         if (!in_singular_search && !is_pv_node && !in_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = FUTILITY_BASE_MARGIN + FUTILITY_PER_DEPTH_MARGIN * depth;
-            if (static_eval + futility_margin <= alpha && !givesCheck()) {
+            if (static_eval + futility_margin <= alpha && !move_gives_check) {
                 if (quiets_count < MAX_QUIETS_TRACKED)
                     quiets_searched[quiets_count++] = move;
                 continue;
@@ -790,7 +788,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
-                          new_depth > 1 && !givesCheck();
+                          new_depth > 1 && !move_gives_check;
 
         if (can_reduce) {
             int reduction = lmr_table[std::min(depth, 63)][std::min(move_count, 63)];
@@ -887,6 +885,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
 
+            // Correction history update on fail-high (beta cutoff) - only quiets
+            // This was missing (only exact was updated) causing eval drift.
+            if (!in_singular_search && !in_check && is_quiet && best_score > static_eval) {
+                // Clamp inside updateCorrection, but ensure sane scores
+                if (std::abs(best_score) < MATE_SCORE - 200 && std::abs(raw_static_eval) < MATE_SCORE - 200)
+                    updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+            }
+
             if (!in_singular_search) {
                 storeTT(hash, depth, best_score, best_move, TT_LOWER, ply_from_root);
             }
@@ -948,10 +954,31 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    bool exact_node = best_score > original_alpha && best_score < beta;
-    if (!in_singular_search && !in_check && exact_node &&
-        best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+    // Full correction history update (exact / fail-low) - previously only exact quiets were updated
+    // Now handle fail-low and exact properly to reduce eval jumps.
+    {
+        bool is_quiet_best = false;
+        if (best_move != chess::Move())
+            is_quiet_best = isQuietMove(board, best_move);
+
+        if (!in_singular_search && !in_check && best_move != chess::Move()) {
+            if (best_score > original_alpha && best_score < beta) {
+                // Exact node - update if quiet
+                if (is_quiet_best && std::abs(best_score) < MATE_SCORE - 200 && std::abs(raw_static_eval) < MATE_SCORE - 200)
+                    updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+            } else if (best_score <= original_alpha) {
+                // Fail-low - our static eval was too optimistic
+                if ((best_move == chess::Move() || is_quiet_best) && best_score < static_eval) {
+                    if (std::abs(best_score) < MATE_SCORE - 200 && std::abs(raw_static_eval) < MATE_SCORE - 200)
+                        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+                }
+            }
+        } else if (!in_singular_search && !in_check && best_move == chess::Move() && best_score <= original_alpha) {
+            // All moves pruned / no best move but fail-low - still correct if static overestimated
+            if (best_score < static_eval && std::abs(best_score) < MATE_SCORE - 200 && std::abs(raw_static_eval) < MATE_SCORE - 200) {
+                updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
+            }
+        }
     }
 
     if (!in_singular_search) {
@@ -1184,8 +1211,10 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                             if (idx >= 0 && rootPolicy.quiet_rank[idx] >= 0) {
                                 float rel = rootPolicy.rel[idx];
                                 float sharp = rootPolicy.quiet_sharpness;
-                                float adj = -0.85f * rel;
-                                adj = std::clamp(adj, -2.0f, 3.0f);
+                                // Reduced from -0.85 to -0.40 to avoid over-bias toward
+                                // possibly inaccurate policy; SPSA previously made this too strong.
+                                float adj = -0.40f * rel;
+                                adj = std::clamp(adj, -1.2f, 1.5f);
                                 adj *= sharp;
                                 reduction += int(std::lround(adj)) * LMR_SCALE;
                             }

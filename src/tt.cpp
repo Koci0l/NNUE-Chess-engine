@@ -59,12 +59,19 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
     if (entry.key == 0) {
         replace = true; // Empty slot
     } else if (entry.key == key) {
-        // Same position: Always update if depth is close or if it's a PV node
-        replace = (depth >= entry.depth - 4 || pv);
+        // Same position: keep deeper entries. PV nodes get slight tolerance but
+        // should NOT overwrite a much deeper entry with a shallow PV search
+        // (previous code used `|| pv` which allowed any depth PV to clobber).
+        if (depth >= entry.depth - 4)
+            replace = true;
+        else if (pv && depth >= entry.depth - 2 && depth >= 0)
+            replace = true;
+        else if (pv && entry.depth < 0) // empty-ish entry
+            replace = true;
     } else {
-        // Collision: Use a priority score. 
+        // Collision: Use a priority score.
         int age_diff = (uint8_t)(current_generation - entry.generation);
-        int entry_priority = entry.depth - (age_diff * 2); 
+        int entry_priority = entry.depth - (age_diff * 2);
         replace = (depth >= entry_priority);
     }
 
