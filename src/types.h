@@ -34,10 +34,23 @@ inline int pieceValue(chess::PieceType pt) {
     return (idx >= 0 && idx < 6) ? values[idx] : 0;
 }
 
+// A move is a "capture" if it takes an enemy piece.  IMPORTANT: castling is
+// internally encoded as king-takes-own-rook, so board.at(move.to()) is our own
+// rook.  Without the CASTLING check castling was classified as a (losing)
+// capture: it got SEE-pruned/ordered together with bad captures, was never
+// treated as a quiet move and polluted the capture history.
+inline bool isCaptureMove(const chess::Board& board, const chess::Move& move) {
+    if (move.typeOf() == chess::Move::CASTLING) return false;
+    return board.at(move.to()) != chess::Piece::NONE ||
+           move.typeOf() == chess::Move::ENPASSANT;
+}
+
+inline bool isPromotionMove(const chess::Move& move) {
+    return move.typeOf() == chess::Move::PROMOTION;
+}
+
 inline bool isQuietMove(const chess::Board& board, const chess::Move& move) {
-    return board.at(move.to()) == chess::Piece::NONE &&
-           move.typeOf() != chess::Move::PROMOTION &&
-           move.typeOf() != chess::Move::ENPASSANT;
+    return !isCaptureMove(board, move) && !isPromotionMove(move);
 }
 
 inline bool hasNonPawnMaterial(const chess::Board& board) {

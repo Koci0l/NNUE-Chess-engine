@@ -118,6 +118,7 @@ struct CaptureSearchInfo {
 static inline bool extractCaptureInfo(const chess::Board& board,
                                       const chess::Move& move,
                                       CaptureSearchInfo& info) {
+    if (move.typeOf() == chess::Move::CASTLING) return false; // "captures" our own rook
     chess::Piece attacker = board.at(move.from());
     chess::Piece captured;
     if (move.typeOf() == chess::Move::ENPASSANT) {
@@ -387,9 +388,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
         if (move == chess::Move()) break;
         searched_any = true;
 
-        bool is_tactical = board.at(move.to()) != chess::Piece::NONE ||
-                           move.typeOf() == chess::Move::PROMOTION ||
-                           move.typeOf() == chess::Move::ENPASSANT;
+        bool is_tactical = isCaptureMove(board, move) || isPromotionMove(move);
 
         if (!in_check && is_tactical && !chess::see::see_ge(board, move, 0))
             continue;
@@ -450,9 +449,22 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (ply_from_root >= MAX_PLY)
         return scaleNNUE(g_nnue.evaluate(board, thread));
 
-    if (stats.stopped || (tm && tm->should_stop())) {
-        stats.stopped = true;
+    if (stats.stopped)
         return alpha;
+
+    // Polling the clock at every single node costs a measurable amount of nps.
+    // The node limit is checked on its own (it wants to be accurate), the wall
+    // clock every 256 nodes, which is still ~0.2ms of search time.
+    if (tm) {
+        if (tm->node_limit > 0) {
+            if (stats.nodes >= static_cast<uint64_t>(tm->node_limit)) {
+                stats.stopped = true;
+                return alpha;
+            }
+        } else if ((stats.nodes & 255) == 0 && tm->should_stop()) {
+            stats.stopped = true;
+            return alpha;
+        }
     }
 
     if (ply_from_root > 0) {
@@ -496,12 +508,6 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 if (te.flag == TT_UPPER && tt_score <= alpha) return tt_score;
             }
         }
-    }
-
-    // IID reduction when no TT move
-    if (!in_singular_search && !is_pv_node && depth >= 4 &&
-        tt_move == chess::Move() && !in_check) {
-        depth--;
     }
 
     int raw_static_eval = 0;
@@ -749,22 +755,22 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         move_count++;
         chess::Piece moved_piece = board.at(move.from());
 
-        int check_cache = -1; // -1 unknown, 0 no check, 1 check
-        auto givesCheck = [&]() -> bool {
-            if (in_check || !is_quiet) return false;
-            if (check_cache < 0) {
-                check_cache =
-                    (board.givesCheck(move) != chess::CheckType::NO_CHECK) ? 1 : 0;
-            }
-            return check_cache == 1;
-        };
+        // IMPORTANT: givesCheck() may only be called while `move` is still a
+        // legal move for the side to move.  It used to be evaluated lazily after
+        // board.makeMove(move) (for the LMR condition), which read a square that
+        // already contained the moved piece / was empty.  That is UB, it made the
+        // LMR decision garbage and even crashed (chess.hpp asserts
+        // at(m.from()).color() == stm_).  Compute it once, up front.
+        const bool move_gives_check =
+            !in_check && is_quiet &&
+            (board.givesCheck(move) != chess::CheckType::NO_CHECK);
 
         // Futility pruning
         if (!in_singular_search && !is_pv_node && !in_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = FUTILITY_BASE_MARGIN + FUTILITY_PER_DEPTH_MARGIN * depth;
-            if (static_eval + futility_margin <= alpha && !givesCheck()) {
+            if (static_eval + futility_margin <= alpha && !move_gives_check) {
                 if (quiets_count < MAX_QUIETS_TRACKED)
                     quiets_searched[quiets_count++] = move;
                 continue;
@@ -790,7 +796,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
                           depth >= 3 && !in_singular_search &&
-                          new_depth > 1 && !givesCheck();
+                          new_depth > 1 && !move_gives_check;
 
         if (can_reduce) {
             int reduction = lmr_table[std::min(depth, 63)][std::min(move_count, 63)];
@@ -1006,6 +1012,13 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
         ss[i].moved_piece = chess::Piece::NONE;
     }
 
+    // The root static eval is used by `improving` at ply 2; without this it was
+    // always -MATE_SCORE and every ply-2 node ran with improving == false.
+    if (!root_in_check) {
+        const int root_raw = scaleNNUE(g_nnue.evaluate(board, thread));
+        ss[0].static_eval = correctedEval(root_raw, board.sideToMove(), getPawnKey(board));
+    }
+
     SearchStats stats;
     stats.reset();
 
@@ -1059,9 +1072,8 @@ chess::Move search(chess::Board& board, int max_depth, ThreadInfo& thread, TimeM
                     return 3000000;
                 }
 
-                bool is_capture = board.at(move.to()) != chess::Piece::NONE ||
-                                  move.typeOf() == chess::Move::ENPASSANT;
-                bool is_promo = move.typeOf() == chess::Move::PROMOTION;
+                bool is_capture = isCaptureMove(board, move);
+                bool is_promo = isPromotionMove(move);
                 is_quiet_out = !is_capture && !is_promo;
 
                 if (is_capture || is_promo) {

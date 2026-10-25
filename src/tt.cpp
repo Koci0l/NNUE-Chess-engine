@@ -59,8 +59,13 @@ void storeTT(uint64_t key, int depth, int score, chess::Move best_move,
     if (entry.key == 0) {
         replace = true; // Empty slot
     } else if (entry.key == key) {
-        // Same position: Always update if depth is close or if it's a PV node
-        replace = (depth >= entry.depth - 4 || pv);
+        // Same position.  Do NOT let a shallower search overwrite a deeper entry:
+        // the old code allowed replacing an entry up to 4 plies deeper (so a
+        // depth-0 quiescence entry could wipe out a depth-4 entry), which threw
+        // away information and made repeated searches of the same position
+        // return different (worse) scores/moves.
+        replace = (depth >= entry.depth) ||
+                  (pv && depth + 2 >= entry.depth);
     } else {
         // Collision: Use a priority score. 
         int age_diff = (uint8_t)(current_generation - entry.generation);

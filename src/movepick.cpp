@@ -48,6 +48,9 @@ int MovePicker::scoreOneCapture(const chess::Move& move) {
     }
 
     int victim = 0;
+    if (!isCaptureMove(m_board, move)) {
+        captured_piece = chess::Piece::NONE; // castling "captures" our own rook
+    }
     if (captured_piece != chess::Piece::NONE) {
         victim = pieceValue(captured_piece.type());
     }
@@ -101,9 +104,8 @@ void MovePicker::scoreCaptures() {
 
     for (const auto& move : m_all_legal) {
         if (move == m_ctx.tt_move) continue;
-        bool is_capture = m_board.at(move.to()) != chess::Piece::NONE ||
-                          move.typeOf() == chess::Move::ENPASSANT;
-        bool is_promo = move.typeOf() == chess::Move::PROMOTION;
+        bool is_capture = isCaptureMove(m_board, move);
+        bool is_promo = isPromotionMove(move);
         if (!is_capture && !is_promo) continue;
         if (m_capture_count >= 256) break;
         m_captures[m_capture_count].move = move;
@@ -119,9 +121,8 @@ void MovePicker::scoreQuiets() {
 
     for (const auto& move : m_all_legal) {
         if (move == m_ctx.tt_move) continue;
-        bool is_capture = m_board.at(move.to()) != chess::Piece::NONE ||
-                          move.typeOf() == chess::Move::ENPASSANT;
-        bool is_promo = move.typeOf() == chess::Move::PROMOTION;
+        bool is_capture = isCaptureMove(m_board, move);
+        bool is_promo = isPromotionMove(move);
         if (is_capture || is_promo) continue;
         if (move == m_killer1 || move == m_killer2 || move == m_ctx.counter_move) continue;
         if (m_quiet_count >= 256) break;
@@ -143,10 +144,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 ensureLegal();
                 if (isValid(m_ctx.tt_move)) {
                     m_last_score = 3000000;
-                    bool tt_capture = m_board.at(m_ctx.tt_move.to()) != chess::Piece::NONE ||
-                                      m_ctx.tt_move.typeOf() == chess::Move::ENPASSANT ||
-                                      m_ctx.tt_move.typeOf() == chess::Move::PROMOTION;
-                    is_quiet_out = !tt_capture;
+                    is_quiet_out = isQuietMove(m_board, m_ctx.tt_move);
                     return m_ctx.tt_move;
                 }
             }
@@ -194,9 +192,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 m_killer1 != m_ctx.tt_move) {
                 ensureLegal();
                 if (isValid(m_killer1)) {
-                    bool is_capture = m_board.at(m_killer1.to()) != chess::Piece::NONE ||
-                                      m_killer1.typeOf() == chess::Move::ENPASSANT ||
-                                      m_killer1.typeOf() == chess::Move::PROMOTION;
+                    bool is_capture = !isQuietMove(m_board, m_killer1);
                     if (!is_capture) {
                         m_last_score = 1500000;
                         is_quiet_out = true;
@@ -213,9 +209,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 m_killer2 != m_ctx.tt_move && m_killer2 != m_killer1) {
                 ensureLegal();
                 if (isValid(m_killer2)) {
-                    bool is_capture = m_board.at(m_killer2.to()) != chess::Piece::NONE ||
-                                      m_killer2.typeOf() == chess::Move::ENPASSANT ||
-                                      m_killer2.typeOf() == chess::Move::PROMOTION;
+                    bool is_capture = !isQuietMove(m_board, m_killer2);
                     if (!is_capture) {
                         m_last_score = 1490000;
                         is_quiet_out = true;
@@ -234,9 +228,7 @@ chess::Move MovePicker::next(bool& is_quiet_out) {
                 m_ctx.counter_move != m_killer2) {
                 ensureLegal();
                 if (isValid(m_ctx.counter_move)) {
-                    bool is_capture = m_board.at(m_ctx.counter_move.to()) != chess::Piece::NONE ||
-                                      m_ctx.counter_move.typeOf() == chess::Move::ENPASSANT ||
-                                      m_ctx.counter_move.typeOf() == chess::Move::PROMOTION;
+                    bool is_capture = !isQuietMove(m_board, m_ctx.counter_move);
                     if (!is_capture) {
                         m_last_score = 1250000;
                         is_quiet_out = true;
@@ -366,9 +358,8 @@ void QSearchMovePicker::scoreCaptures() {
         if (m_move_count >= 256) break;
 
         if (m_in_check) {
-            bool is_capture = m_board.at(move.to()) != chess::Piece::NONE ||
-                              move.typeOf() == chess::Move::ENPASSANT;
-            bool is_promo = move.typeOf() == chess::Move::PROMOTION;
+            bool is_capture = isCaptureMove(m_board, move);
+            bool is_promo = isPromotionMove(move);
             int score = 0;
             if (is_capture || is_promo)
                 score = 2000000 + tacticalScore(move);
@@ -376,9 +367,7 @@ void QSearchMovePicker::scoreCaptures() {
             m_moves[m_move_count].score = score;
             ++m_move_count;
         } else {
-            bool is_tactical = m_board.at(move.to()) != chess::Piece::NONE ||
-                               move.typeOf() == chess::Move::PROMOTION ||
-                               move.typeOf() == chess::Move::ENPASSANT;
+            bool is_tactical = isCaptureMove(m_board, move) || isPromotionMove(move);
             if (!is_tactical) continue;
             m_moves[m_move_count].move = move;
             m_moves[m_move_count].score = tacticalScore(move);
@@ -396,9 +385,8 @@ chess::Move QSearchMovePicker::next() {
                 ensureLegal();
                 if (isValid(m_tt_move)) {
                     if (!m_in_check) {
-                        bool is_tactical = m_board.at(m_tt_move.to()) != chess::Piece::NONE ||
-                                           m_tt_move.typeOf() == chess::Move::PROMOTION ||
-                                           m_tt_move.typeOf() == chess::Move::ENPASSANT;
+                        bool is_tactical = isCaptureMove(m_board, m_tt_move) ||
+                                           isPromotionMove(m_tt_move);
                         if (!is_tactical) break;
                     }
                     m_last_score = 3000000;
@@ -448,9 +436,7 @@ int scoreMoveForOrdering(const chess::Board& board, const chess::Move& move,
         captured = board.at(move.to());
     }
 
-    bool is_tactical = captured != chess::Piece::NONE ||
-                       move.typeOf() == chess::Move::ENPASSANT ||
-                       move.typeOf() == chess::Move::PROMOTION;
+    bool is_tactical = isCaptureMove(board, move) || isPromotionMove(move);
 
     if (is_tactical) {
         int see_score = chess::see::see_ge(board, move, 0) ? 100

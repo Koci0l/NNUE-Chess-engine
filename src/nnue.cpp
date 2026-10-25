@@ -254,7 +254,7 @@ int NNUE::forwardPass(const chess::Board* board, const AccumulatorPair& accumula
 // ============================================================================
 // Evaluate
 // ============================================================================
-i16 NNUE::evaluate(const chess::Board& board, ThreadInfo& thisThread) {
+i32 NNUE::evaluate(const chess::Board& board, ThreadInfo& thisThread) {
     const int eval = g_nnue.forwardPass(&board, thisThread.accumulatorStack.current());
     return std::clamp(eval, Search::TB_MATED_IN_MAX_PLY, Search::TB_MATE_IN_MAX_PLY);
 }

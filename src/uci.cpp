@@ -539,9 +539,27 @@ static bool process_command(const std::string& line, chess::Board& board, Thread
             for (size_t i = moves_idx + 1; i < tokens.size(); ++i) {
                 chess::Move move = chess::uci::uciToMove(board, tokens[i]);
 
-                if (move != chess::Move()) {
-                    board.makeMove(move);
+                if (move == chess::Move())
+                    continue;
+
+                // Never apply an illegal move: chess::Board::makeMove() has undefined
+                // behaviour (and chess.hpp asserts) if the move is not legal.  A GUI or
+                // test harness sending a bad move list used to corrupt the whole board.
+                chess::Movelist legal;
+                chess::movegen::legalmoves(legal, board);
+
+                bool is_legal = false;
+                for (const auto& m : legal) {
+                    if (m == move) { is_legal = true; break; }
                 }
+
+                if (!is_legal) {
+                    std::cout << "info string illegal move in position command: "
+                              << tokens[i] << std::endl;
+                    break;
+                }
+
+                board.makeMove(move);
             }
         }
 

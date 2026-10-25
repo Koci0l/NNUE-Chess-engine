@@ -10,13 +10,16 @@ class Square;
 class Move;
 }
 
-#if defined(AVX512F)
+// The feature-transformed weights are read with *aligned* SIMD loads
+// (_mm512_load_si512 / _mm256_load_si256 / _mm_load_si128), so the
+// accumulator must be aligned to the widest vector we might use.
+//
+// NOTE: the previous version tested for `AVX512F` / `AVX2` / `AVX` which are
+// never defined by the compiler (the real macros are __AVX512F__ etc.), so the
+// alignment silently fell back to 16 and every AVX2/AVX512 build performed
+// misaligned aligned-loads -> SIGSEGV (#GP) or garbage.  Just use 64 bytes
+// unconditionally: Accumulator is 2048 bytes so this costs nothing.
 #define ALIGNMENT alignas(64)
-#elif defined(AVX2) || defined(AVX)
-#define ALIGNMENT alignas(32)
-#else
-#define ALIGNMENT alignas(16)
-#endif
 
 class ALIGNMENT Accumulator {
 public:
@@ -44,7 +47,12 @@ struct AccumulatorPair {
 
 class AccumulatorStack {
 private:
-    static constexpr size_t MAX_DEPTH = 128;
+    // One accumulator is needed per ply, plus one more for the singular-extension
+    // verification search which is performed at the same ply as the node itself.
+    // MAX_PLY is 100, so 256 entries (1 MiB) is always enough; the previous value
+    // of 128 could be exceeded (-> out-of-bounds writes into the object) on long
+    // forcing lines with singular extensions.
+    static constexpr size_t MAX_DEPTH = 256;
     ALIGNMENT AccumulatorPair stack[MAX_DEPTH];
     size_t idx = 0;
 
@@ -52,12 +60,13 @@ public:
     AccumulatorPair& current() { return stack[idx]; }
     const AccumulatorPair& current() const { return stack[idx]; }
 
-    void push() { 
+    void push() {
+        if (idx + 1 >= MAX_DEPTH) return; // never happens, but never corrupt memory either
         stack[idx + 1] = stack[idx];
         ++idx;
     }
-    void pop() { 
-        if (idx > 0) --idx; 
+    void pop() {
+        if (idx > 0) --idx;
     }
 
     void resetAccumulators(const chess::Board& board) {

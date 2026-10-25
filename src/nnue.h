@@ -7,13 +7,11 @@
 // Include types.h for ThreadInfo
 #include "types.h"
 
-#if defined(AVX512F)
+// Same fix as in accumulator.h: the old code tested undefined macros
+// (AVX512F/AVX2/AVX instead of __AVX512F__/__AVX2__/__AVX), which made the
+// weight arrays only 16-byte aligned while they are read with aligned 256/512
+// bit loads.  Always 64-byte align.
 constexpr usize NN_ALIGNMENT = 64;
-#elif defined(AVX2) || defined(AVX)
-constexpr usize NN_ALIGNMENT = 32;
-#else
-constexpr usize NN_ALIGNMENT = 16;
-#endif
 
 struct NNUE {
     // Weights and biases
@@ -33,7 +31,7 @@ struct NNUE {
     static usize getMaterialBucket(const chess::Board& board);
     void loadNetwork(const std::string& filepath);
     int forwardPass(const chess::Board* board, const AccumulatorPair& accumulators);
-    static i16 evaluate(const chess::Board& board, ThreadInfo& thisThread);
+    static i32 evaluate(const chess::Board& board, ThreadInfo& thisThread);
     void debugNetwork(const chess::Board& board, const AccumulatorPair& accumulators);
     void debugVectorizedSCReLU(const Accumulator& stm, const Accumulator& nstm, usize bucket);
     void showBuckets(const chess::Board* board, const AccumulatorPair& accumulators);
