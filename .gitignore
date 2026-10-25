@@ -3,6 +3,10 @@ arena
 *.exe
 *.o
 
+# Opening books (make uho downloads these; they are large and not ours to ship)
+*.epd
+*.epd.zip
+
 # Generated embedded networks (see Makefile: make embed)
 src/policy_embed.h
 src/policy_embed_small.h

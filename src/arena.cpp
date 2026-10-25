@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -51,6 +52,20 @@
 
 enum class QsMode { Off, On, Both };
 
+// How the NNUE side picks its move:
+//   Search -> the engine's alpha-beta search (depth/nodes/movetime, QS switch)
+//   Static -> no search at all: score every legal move once with the NNUE
+//             output and play the best one (exactly d1 / ~#legal-move nodes)
+enum class NnueMode { Search, Static };
+
+// One opening position, from a FEN file or an EPD book (e.g. uho.epd).
+struct Opening {
+    std::string fen;   // normalised FEN (6 fields)
+    std::string id;    // EPD "id" op, e.g. UHO_Lichess_4852_v1.epd:137
+    std::string bm;    // EPD "bm" op, if any
+    bool        epd = false;
+};
+
 struct Options {
     int  games              = 20;
 
@@ -70,7 +85,11 @@ struct Options {
     int      adjudicateCp   = 0;      // >0: adjudicate on |NNUE eval| at maxPlies
 
     int      openPlies      = 6;      // random opening plies from startpos
-    std::string openingsFile;         // or: one FEN per line
+    std::vector<std::string> openingsFiles;  // FEN-per-line / EPD / uho.epd
+    std::string openingsOrder = "random";    // random | seq
+    bool        epdPlayBm   = false;  // play the EPD "bm" move (only if it is UCI)
+
+    NnueMode nnueMode       = NnueMode::Search;
 
     uint64_t seed           = 20240215;
     int      hashMb         = 128;
@@ -156,6 +175,7 @@ struct GameReport {
     int  plies            = 0;
 
     std::string startFen;                 // empty == startpos
+    std::string openingId;                // EPD id, if any
     std::vector<std::string> moves;       // uci, including opening moves
 
     int      lastNnueScore = 0;           // last NNUE search score, white-relative
@@ -218,8 +238,356 @@ static void eloFromScore(double score, int games, double& elo, double& lo, doubl
     if (std::abs(hi)  < 1.0) hi  = 0.0;
 }
 
+// ============================================================================
+// Openings: FEN lists and EPD books (uho.epd, ...)
+// ----------------------------------------------------------------------------
+// Accepted line formats:
+//   * FEN      "rnbqkbnr/pppppppp/8/8/... w KQkq - 0 1"
+//   * EPD      "rnbqkbnr/... w KQkq - bm e4; id "UHO_Lichess_4852_v1.epd:137";"
+//   * UCI      "rnbqkbnr/... w KQkq - moves e2e4 e7e5"   (moves are applied)
+// Comment lines ('#') and blank lines are ignored, and a UTF-8 BOM is stripped.
+// ============================================================================
+
+static std::string trimCopy(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return std::string();
+
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+static std::vector<std::string> splitWs(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream iss(s);
+    std::string t;
+    while (iss >> t) out.push_back(t);
+    return out;
+}
+
+// Reads the value of an EPD operation ("op value;"), empty if not present.
+static std::string epdOp(const std::string& line, const std::string& op) {
+    const std::string key = op + " ";
+    size_t pos = line.find(key);
+
+    while (pos != std::string::npos) {
+        const bool atStart = (pos == 0) || std::isspace(static_cast<unsigned char>(line[pos - 1])) ||
+                             line[pos - 1] == ';';
+
+        if (atStart) {
+            size_t start = pos + key.size();
+
+            // Values may be quoted, optionally with a leading '"'.
+            if (start < line.size() && line[start] == '"') {
+                const size_t end = line.find('"', start + 1);
+                if (end == std::string::npos) return line.substr(start + 1);
+                return line.substr(start + 1, end - start - 1);
+            }
+
+            size_t end = line.find(';', start);
+            if (end == std::string::npos) end = line.size();
+
+            return trimCopy(line.substr(start, end - start));
+        }
+
+        pos = line.find(key, pos + 1);
+    }
+
+    return std::string();
+}
+
+// Returns the 4 FEN fields of an EPD/FEN line, or an empty vector.
+static std::vector<std::string> boardFields(const std::string& line) {
+    std::vector<std::string> toks = splitWs(line);
+
+    if (toks.size() < 4) return {};
+
+    // Drop a trailing ';' from the castling / ep field.
+    for (int i = 0; i < 4; ++i) {
+        while (!toks[static_cast<size_t>(i)].empty() &&
+               toks[static_cast<size_t>(i)].back() == ';') {
+            toks[static_cast<size_t>(i)].pop_back();
+        }
+    }
+
+    if (toks[1] != "w" && toks[1] != "b") return {};
+
+    return { toks[0], toks[1], toks[2], toks[3] };
+}
+
+// Builds a full 6-field FEN and plays any "moves ..." from the line.
+static bool openingFromLine(const std::string& line,
+                            Opening& out,
+                            std::string& error) {
+    const std::vector<std::string> fields = boardFields(line);
+
+    if (fields.empty()) {
+        error = "not a FEN/EPD position";
+        return false;
+    }
+
+    const std::vector<std::string> toks = splitWs(line);
+    const bool isEpd = (line.find(';') != std::string::npos) || !epdOp(line, "id").empty() ||
+                       !epdOp(line, "bm").empty();
+
+    int hm = 0;
+    int fm = 1;
+    size_t next = 4;
+    bool hasCounters = false;
+
+    if (toks.size() >= 6 && toks[4].find_first_not_of("0123456789") == std::string::npos &&
+        toks[5].find_first_not_of("0123456789") == std::string::npos) {
+        hm = std::atoi(toks[4].c_str());
+        fm = std::max(1, std::atoi(toks[5].c_str()));
+        hasCounters = true;
+        next = 6;
+    }
+
+    if (isEpd && !hasCounters) {
+        const std::string hmvc = epdOp(line, "hmvc");
+        const std::string fmvn = epdOp(line, "fmvn");
+        if (!hmvc.empty()) hm = std::atoi(hmvc.c_str());
+        if (!fmvn.empty()) fm = std::max(1, std::atoi(fmvn.c_str()));
+    }
+
+    std::string fen = fields[0] + " " + fields[1] + " " + fields[2] + " " + fields[3] + " " +
+                      std::to_string(hm) + " " + std::to_string(fm);
+
+    chess::Board board;
+
+    if (!board.setFen(fen)) {
+        error = "illegal FEN: " + fen;
+        return false;
+    }
+
+    // Optional: "moves e2e4 e7e5" (UCI start position lines).
+    if (next < toks.size() && toks[next] == "moves") {
+        for (size_t i = next + 1; i < toks.size(); ++i) {
+            std::string tok = toks[i];
+
+            while (!tok.empty() && (tok.back() == ';' || tok.back() == '"')) tok.pop_back();
+
+            chess::Move m = chess::uci::uciToMove(board, tok);
+
+            if (m == chess::Move()) break;
+
+            board.makeMove(m);
+        }
+
+        fen = board.getFen();
+    }
+
+    out = Opening();
+    out.fen = fen;
+    out.epd = isEpd;
+    out.id  = epdOp(line, "id");
+    out.bm  = epdOp(line, "bm");
+
+    // Only plain UCI promotions are usable as an opening move.
+    if (!out.bm.empty() && out.bm.find('=') != std::string::npos)
+        out.bm.clear();
+
+    return true;
+}
+
+// "uho.epd" (or whatever --uho was given) may not exist as typed: fall back to
+// the usual UHO file names in the working directory, then to any UHO*.epd.
+// Returns an empty string when nothing was found.
+static std::string resolveBookPath(const std::string& wanted) {
+    auto exists = [](const std::string& p) {
+        std::ifstream f(p);
+        return f.good();
+    };
+
+    if (exists(wanted)) return wanted;
+
+    static const char* candidates[] = {
+        "uho.epd",
+        "UHO_Lichess_4852_v1.epd",
+        "UHO_4060_v4.epd",
+        "UHO_4060_v3.epd",
+        "UHO_4060_v2.epd",
+        "UHO_4060_v1.epd",
+    };
+
+    for (const char* c : candidates) {
+        if (exists(c)) return c;
+    }
+
+    // Last resort: any *.epd whose name starts with UHO in the working dir.
+#if defined(__cpp_lib_filesystem)
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    std::string best;
+
+    for (const auto& e : fs::directory_iterator(fs::current_path(), ec)) {
+        if (!e.is_regular_file(ec)) continue;
+
+        const std::string name = e.path().filename().string();
+
+        if (name.rfind("UHO", 0) == 0 && e.path().extension() == ".epd") {
+            if (best.empty() || name < best) best = name;
+        }
+    }
+
+    return best;
+#else
+    return std::string();
+#endif
+}
+
+// Streams the book(s) and keeps only what the match needs, so even a
+// multi-million-line book (UHO_Lichess_4852_v1.epd) stays cheap in memory:
+//   order == "seq"    -> the first `needed` openings of the file(s)
+//   order == "random" -> a uniform reservoir sample of `needed` openings
+static bool loadOpenings(const std::vector<std::string>& paths,
+                         size_t needed,
+                         const std::string& order,
+                         uint64_t seed,
+                         std::vector<Opening>& out,
+                         size_t& totalSeen,
+                         std::string& error) {
+    out.clear();
+    totalSeen = 0;
+
+    std::mt19937_64 rng(seed);
+
+    size_t badLines    = 0;
+    size_t badReported = 0;
+
+    for (const std::string& path : paths) {
+        std::ifstream in(path);
+
+        if (!in) {
+            error = "cannot open openings file: " + path;
+            return false;
+        }
+
+        std::string line;
+        int lineNo = 0;
+
+        while (std::getline(in, line)) {
+            ++lineNo;
+
+            if (lineNo == 1 && line.size() >= 3 &&
+                static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF) {
+                line.erase(0, 3);
+            }
+
+            const std::string t = trimCopy(line);
+
+            if (t.empty() || t[0] == '#') continue;
+
+            Opening op;
+            std::string err;
+
+            if (!openingFromLine(t, op, err)) {
+                ++badLines;
+
+                if (badReported < 5) {
+                    std::cerr << "warning: " << path << ":" << lineNo << ": "
+                              << err << " (skipped)" << std::endl;
+                    ++badReported;
+                }
+
+                continue;
+            }
+
+            const size_t n = totalSeen++;
+
+            if (out.size() < needed) {
+                out.push_back(std::move(op));
+            } else if (order == "seq") {
+                // keep the first `needed` only
+                continue;
+            } else {
+                // Reservoir sampling: replace a random slot with probability
+                // needed / n, so the kept set is a uniform sample.
+                std::uniform_int_distribution<size_t> dist(0, n);
+                const size_t j = dist(rng);
+
+                if (j < out.size()) out[j] = std::move(op);
+            }
+        }
+    }
+
+    if (badLines > 0) {
+        std::cerr << "warning: skipped " << badLines << " unparsable line(s)" << std::endl;
+    }
+
+    if (order == "seq" && out.size() == needed) {
+        // already in file order
+    } else if (order == "random") {
+        std::shuffle(out.begin(), out.end(), rng);
+    }
+
+    return true;
+}
+
 // Per-process RNG used by the policy sampler (defined below).
 static std::mt19937_64& threadRng();
+
+// ============================================================================
+// NNUE player without search: score every legal move with the NNUE output
+// ----------------------------------------------------------------------------
+// One NNUE forward pass per legal move (the leaf eval), i.e. what a depth-1
+// search would see but with no quiescence search, no pruning and no ordering.
+// On the start position with the policy net this is ~20 nodes -- exactly one
+// per legal move.
+// ============================================================================
+
+struct StaticNnueResult {
+    chess::Move move;
+    int         bestMoveScore = 0;   // mover-relative (= NNUE's own point of view)
+    int         bestEvalScore = 0;   // white-relative static eval of the position
+    uint64_t    nodes         = 0;   // == number of legal moves
+    bool        ok            = false;
+};
+
+static StaticNnueResult staticNnueBestMove(chess::Board& board, ThreadInfo& thread) {
+    StaticNnueResult res;
+
+    chess::Movelist legal;
+    chess::movegen::legalmoves(legal, board);
+
+    if (legal.empty()) return res;
+
+    const bool whiteToMove = (board.sideToMove() == chess::Color::WHITE);
+    const int  sign        = whiteToMove ? 1 : -1;
+
+    bool haveMoveScore = false;
+
+    for (int i = 0; i < int(legal.size()); ++i) {
+        const chess::Move m = legal[static_cast<size_t>(i)];
+
+        board.makeMove(m);
+        thread.accumulatorStack.resetAccumulators(board);
+
+        // NNUE is side-to-move relative, so at the child this score is from the
+        // *opponent's* point of view; the move is worth -eval to us.
+        const int childEval = g_nnue.evaluate(board, thread);
+        const int gain      = -childEval;
+
+        board.unmakeMove(m);
+        thread.accumulatorStack.resetAccumulators(board);
+
+        res.nodes++;
+
+        if (!haveMoveScore || gain > res.bestMoveScore) {
+            res.bestMoveScore = gain;
+            res.move = m;
+            haveMoveScore = true;
+        }
+    }
+
+    thread.accumulatorStack.resetAccumulators(board);
+    res.bestEvalScore = sign * g_nnue.evaluate(board, thread);
+    res.ok = haveMoveScore;
+
+    return res;
+}
 
 // ============================================================================
 // Players
@@ -300,7 +668,7 @@ static GameReport playGame(const Options& opt,
                            bool nnueIsWhite,
                            bool useQs,
                            int openingIndex,
-                           const std::vector<std::string>& openingFens,
+                           const std::vector<Opening>& openings,
                            int gameNumber) {
     GameReport rep;
     rep.nnueIsWhite = nnueIsWhite;
@@ -310,12 +678,13 @@ static GameReport playGame(const Options& opt,
 
     ThreadInfo thread;
 
-    const bool fromFenFile = !openingFens.empty();
+    const bool fromOpeningList = !openings.empty();
 
-    if (fromFenFile) {
-        const std::string& fen = openingFens[static_cast<size_t>(openingIndex) % openingFens.size()];
-        board.setFen(fen);
-        rep.startFen = fen;
+    if (fromOpeningList) {
+        const Opening& op = openings[static_cast<size_t>(openingIndex) % openings.size()];
+        board.setFen(op.fen);
+        rep.startFen   = op.fen;
+        rep.openingId  = op.id;
     } else {
         board.setFen(chess::constants::STARTPOS);
     }
@@ -327,8 +696,35 @@ static GameReport playGame(const Options& opt,
     g_use_policy = opt.searchPolicy;
     g_silent     = true;
 
-    // ---- Opening book / random opening ------------------------------------
-    if (!fromFenFile && opt.openPlies > 0) {
+    // ---- Optional EPD best-move prefix ------------------------------------
+    if (fromOpeningList && opt.epdPlayBm) {
+        const Opening& op = openings[static_cast<size_t>(openingIndex) % openings.size()];
+
+        if (!op.bm.empty()) {
+            chess::Movelist legal;
+            chess::movegen::legalmoves(legal, board);
+
+            const chess::Move bm = chess::uci::uciToMove(board, op.bm);
+
+            if (bm != chess::Move() && isLegalMove(legal, bm)) {
+                rep.moves.push_back(chess::uci::moveToUci(bm));
+
+                if (opt.verbose) {
+                    std::cout << "  game " << gameNumber
+                              << " ply " << std::right << std::setw(3) << int(rep.moves.size())
+                              << "  " << std::left << std::setw(6) << "epd-bm"
+                              << " (" << colorName(board.sideToMove()) << ") "
+                              << chess::uci::moveToUci(bm)
+                              << std::endl;
+                }
+
+                applyMove(board, thread, bm);
+            }
+        }
+    }
+
+    // ---- Random opening ---------------------------------------------------
+    if (!fromOpeningList && opt.openPlies > 0) {
         std::mt19937_64 orng(opt.seed * 1000003ULL + uint64_t(openingIndex) * 7919ULL + 17ULL);
 
         for (int i = 0; i < opt.openPlies; ++i) {
@@ -398,7 +794,33 @@ static GameReport playGame(const Options& opt,
         chess::Move move;
         std::string moveInfo;
 
-        if (nnueTurn) {
+        if (nnueTurn && opt.nnueMode == NnueMode::Static) {
+            const double t0 = nowMs();
+
+            const StaticNnueResult sr = staticNnueBestMove(board, thread);
+
+            const double dt = nowMs() - t0;
+
+            rep.nnueMs    += dt;
+            rep.nnueNodes += sr.nodes;
+            // mover-relative -> white-relative (mover is the NNUE side here)
+            rep.lastNnueScore = nnueIsWhite ? sr.bestMoveScore : -sr.bestMoveScore;
+
+            move = sr.ok ? sr.move : legal[0];
+
+            if (move == chess::Move() || !isLegalMove(legal, move))
+                move = legal[0];
+
+            if (opt.verbose) {
+                std::ostringstream oss;
+                oss << " static-eval";
+                if (opt.nodes > 0) oss << " n" << opt.nodes;
+                oss << " eval " << sr.bestEvalScore
+                    << " move-score " << sr.bestMoveScore
+                    << " nodes " << sr.nodes;
+                moveInfo = oss.str();
+            }
+        } else if (nnueTurn) {
             const double t0 = nowMs();
 
             // TimeManager shaves MOVE_OVERHEAD_MS off the movetime budget, so
@@ -453,11 +875,11 @@ static GameReport playGame(const Options& opt,
         }
 
         rep.moves.push_back(chess::uci::moveToUci(move));
-        rep.plies = ply + 1;
+        rep.plies = int(rep.moves.size());   // includes any opening prefix
 
         if (opt.verbose) {
             std::cout << "  game " << gameNumber
-                      << " ply " << std::right << std::setw(3) << (ply + 1)
+                      << " ply " << std::right << std::setw(3) << rep.moves.size()
                       << "  " << std::left << std::setw(6) << (nnueTurn ? "NNUE" : "Policy")
                       << " (" << colorName(board.sideToMove()) << ") "
                       << chess::uci::moveToUci(move)
@@ -514,62 +936,60 @@ static GameReport playGame(const Options& opt,
 // Match
 // ============================================================================
 
-static MatchResult runMatch(const Options& opt, bool useQs) {
+static MatchResult runMatch(const Options& opt,
+                            const std::vector<Opening>& openings,
+                            bool useQs) {
     MatchResult res;
     res.qs = useQs;
 
-    std::vector<std::string> openingFens;
-
-    if (!opt.openingsFile.empty()) {
-        std::ifstream in(opt.openingsFile);
-
-        if (!in) {
-            std::cerr << "error: cannot open openings file: " << opt.openingsFile << std::endl;
-        } else {
-            std::string line;
-
-            while (std::getline(in, line)) {
-                // trim
-                size_t a = line.find_first_not_of(" \t\r\n");
-                if (a == std::string::npos) continue;
-                size_t b = line.find_last_not_of(" \t\r\n");
-                std::string f = line.substr(a, b - a + 1);
-
-                if (f.empty() || f[0] == '#') continue;
-                openingFens.push_back(f);
-            }
-        }
-
-        if (openingFens.empty()) {
-            std::cout << "info: no usable FENs in " << opt.openingsFile
-                      << ", falling back to random openings" << std::endl;
-        }
-    }
-
     std::cout << "=====================================================================\n";
-    std::cout << " match: Kociolek NNUE (search)  vs  policy net (no search)\n";
-    std::cout << " quiescence search : " << (useQs ? "ON" : "OFF") << "\n";
-    std::cout << " nnue player       : depth " << opt.depth;
-    if (opt.nodes > 0)    std::cout << ", nodes " << opt.nodes;
-    if (opt.movetime > 0) std::cout << ", movetime " << opt.movetime << "ms";
-    std::cout << ", search-policy " << (opt.searchPolicy ? "on" : "off") << "\n";
+    std::cout << " match: Kociolek NNUE  vs  policy net (no search)\n";
+    std::cout << " nnue player       : "
+              << (opt.nnueMode == NnueMode::Static
+                      ? std::string("static NNUE output only, no search (1 eval per legal move)")
+                      : ("search, depth " + std::to_string(opt.depth)))
+              << "\n";
+    if (opt.nnueMode == NnueMode::Search) {
+        if (opt.nodes > 0)    std::cout << "                     nodes " << opt.nodes << " per move\n";
+        if (opt.movetime > 0) std::cout << "                     movetime " << opt.movetime << "ms per move\n";
+        std::cout << "                     search-policy " << (opt.searchPolicy ? "on" : "off") << "\n";
+        std::cout << " quiescence search : " << (useQs ? "ON" : "OFF") << "\n";
+    } else {
+        std::cout << " quiescence search : " << (useQs ? "ON" : "OFF")
+                  << " (unused: there is no search at all)\n";
+    }
     std::cout << " policy player     : " << (opt.useSmallPolicy ? "small" : "big")
               << " net, " << (opt.policyTemp <= 0.0f
                                 ? std::string("argmax")
                                 : ("sample T=" + std::to_string(opt.policyTemp)))
               << "\n";
+    std::cout << " openings          : ";
+    if (openings.empty()) {
+        std::cout << "random " << opt.openPlies << " plies from startpos\n";
+    } else {
+        std::cout << openings.size() << " positions from ";
+        for (size_t i = 0; i < opt.openingsFiles.size(); ++i) {
+            if (i) std::cout << ", ";
+            std::cout << opt.openingsFiles[i];
+        }
+        std::cout << " (" << opt.openingsOrder << ")\n";
+    }
     std::cout << " games             : " << opt.games << "\n";
     std::cout << "=====================================================================\n";
     std::cout.flush();
 
+    // Two games per opening with colours swapped, so each opening is played
+    // once as white and once as black by the NNUE player. The `openings` list
+    // already holds exactly the sampled positions, in playing order.
     for (int g = 0; g < opt.games; ++g) {
-        // Alternate colours; both colours of the same opening pair use the
-        // same opening (opening index = g / 2).
         const bool nnueIsWhite = (g % 2 == 0);
-        const int  openingIdx  = g / 2;
+        const size_t pair      = size_t(g / 2);
+        const int  openingIdx  = openings.empty()
+                                     ? 0
+                                     : int(pair % openings.size());
 
         const double t0 = nowMs();
-        GameReport rep = playGame(opt, nnueIsWhite, useQs, openingIdx, openingFens, g + 1);
+        GameReport rep = playGame(opt, nnueIsWhite, useQs, openingIdx, openings, g + 1);
         const double dt = nowMs() - t0;
 
         res.games++;
@@ -592,6 +1012,12 @@ static MatchResult runMatch(const Options& opt, bool useQs) {
         res.reports.push_back(rep);
 
         const std::string resultStr = outcomeToResultString(rep.outcome);
+
+        if (!rep.openingId.empty()) {
+            std::cout << "  opening: " << rep.openingId << "\n";
+        } else if (!rep.startFen.empty() && opt.verbose) {
+            std::cout << "  opening fen: " << rep.startFen << "\n";
+        }
 
         std::cout << "game " << std::right << std::setw(3) << (g + 1) << "/" << opt.games
                   << "  " << (nnueIsWhite ? "NNUE=w Policy=b" : "NNUE=b Policy=w")
@@ -677,8 +1103,10 @@ static void appendPgn(std::ostream& out,
         ++round;
 
         const std::string nnueName =
-            "Kociolek-NNUE d" + std::to_string(opt.depth) +
-            (match.qs ? " qs=on" : " qs=off");
+            opt.nnueMode == NnueMode::Static
+                ? std::string("Kociolek-NNUE static")
+                : ("Kociolek-NNUE d" + std::to_string(opt.depth) +
+                   (match.qs ? " qs=on" : " qs=off"));
 
         const std::string policyName =
             std::string("Policy-") + (opt.useSmallPolicy ? "small" : "big") +
@@ -701,6 +1129,10 @@ static void appendPgn(std::ostream& out,
             out << "[FEN \"" << g.startFen << "\"]\n";
         }
 
+        if (!g.openingId.empty()) {
+            out << "[Opening \"" << g.openingId << "\"]\n";
+        }
+
         out << "\n" << pgnMoves(g) << " " << pgnResultFor(g) << "\n\n";
     }
 }
@@ -717,8 +1149,14 @@ usage: ./arena [options]
 
 Match
   --games N            games to play, colours alternate          (default 20)
-  --qs on|off|both     quiescence search switch; "both" plays the
-                       whole match twice (qs on, then qs off)    (default on)
+  --nnue-mode M        search   = full alpha-beta search          (default)
+                       static   = NNUE output only, no search: evaluate
+                                  every legal move once and play the best
+                                  one (on startpos this is ~20 nodes, i.e.
+                                  exactly d1 without quiescence)
+  --static             shorthand for --nnue-mode static
+  --qs on|off|both     quiescence search switch (search mode only);
+                       "both" plays the whole match twice       (default on)
   --depth N            NNUE search depth per move                 (default 8)
   --nodes N            NNUE node limit per move (0 = off)         (default 0)
   --movetime MS        NNUE time per move in ms, min 75 (0 = off)  (default 0)
@@ -734,8 +1172,16 @@ Networks
                        from policy^(1/T)                          (default 0)
 
 Game handling
-  --open-plies N       random opening plies from startpos         (default 6)
-  --openings <file>    one FEN per line instead of random openings
+  --openings <file>    opening book: FEN per line, EPD (uho.epd,
+                       EPD with bm/id ops) or "FEN moves ..." lines.
+                       May be repeated; files are concatenated.
+                       Both colours of a pair get the same opening.
+  --uho [file]         shorthand for --openings uho.epd
+  --openings-order O   random = shuffle the book, no repeats until it
+                       runs out (default) | seq = file order
+  --epd-bm             play the EPD "bm" move first when it is a UCI move
+  --open-plies N       random opening plies from startpos when no
+                       --openings/--uho is given                   (default 6)
   --max-plies N        adjudicate a draw after N plies            (default 240)
   --adjudicate-cp N    >0: adjudicate on |NNUE eval| at max-plies (default 0)
   --hash MB            transposition table size                   (default 128)
@@ -749,6 +1195,8 @@ Output
 examples
   ./arena                                    # 20 games, qs on
   ./arena --games 40 --qs both --depth 8     # qs on vs qs off
+  ./arena --uho --games 100                  # UHO openings, both colours
+  ./arena --static --uho                    # NNUE eval only vs policy net
   ./arena --qs off --movetime 100 --verbose
   ./arena --openings openings.fen --policy-temp 0.5 --pgn match.pgn
 )";
@@ -784,6 +1232,23 @@ static bool parseArgs(int argc, char** argv, Options& opt, bool& showHelp) {
             opt.verbose = true;
         } else if (a == "--policy-small") {
             opt.useSmallPolicy = true;
+        } else if (a == "--static") {
+            opt.nnueMode = NnueMode::Static;
+        } else if (a == "--nnue-mode") {
+            const char* v = needValue(i, a); if (!v) return false;
+
+            std::string m(v);
+            std::transform(m.begin(), m.end(), m.begin(),
+                           [](unsigned char c) { return char(std::tolower(c)); });
+
+            if (m == "static" || m == "eval" || m == "d1" || m == "1") {
+                opt.nnueMode = NnueMode::Static;
+            } else if (m == "search" || m == "full") {
+                opt.nnueMode = NnueMode::Search;
+            } else {
+                std::cerr << "error: --nnue-mode expects search|static" << std::endl;
+                return false;
+            }
         } else if (a == "--games") {
             const char* v = needValue(i, a); if (!v) return false;
             opt.games = std::max(1, std::atoi(v));
@@ -835,7 +1300,43 @@ static bool parseArgs(int argc, char** argv, Options& opt, bool& showHelp) {
             opt.openPlies = std::max(0, std::atoi(v));
         } else if (a == "--openings") {
             const char* v = needValue(i, a); if (!v) return false;
-            opt.openingsFile = v;
+            opt.openingsFiles.push_back(v);
+        } else if (a == "--uho") {
+            // Optional file name: --uho [file] / --uho=file
+            std::string file = "uho.epd";
+            bool looksLikePath = false;
+
+            if (i + 1 < argc) {
+                const std::string next = argv[i + 1];
+
+                if (!next.empty() && next[0] != '-' &&
+                    (next.size() > 4 && (next.substr(next.size() - 4) == ".epd" ||
+                                         next.substr(next.size() - 4) == ".fen" ||
+                                         next.substr(next.size() - 4) == ".txt"))) {
+                    looksLikePath = true;
+                }
+            }
+
+            if (looksLikePath) file = argv[++i];
+
+            opt.openingsFiles.push_back(file);
+        } else if (a.rfind("--uho=", 0) == 0) {
+            opt.openingsFiles.push_back(a.substr(6));
+        } else if (a == "--epd-bm") {
+            opt.epdPlayBm = true;
+        } else if (a == "--openings-order") {
+            const char* v = needValue(i, a); if (!v) return false;
+
+            std::string o(v);
+            std::transform(o.begin(), o.end(), o.begin(),
+                           [](unsigned char c) { return char(std::tolower(c)); });
+
+            if (o != "random" && o != "seq" && o != "sequential") {
+                std::cerr << "error: --openings-order expects random|seq" << std::endl;
+                return false;
+            }
+
+            opt.openingsOrder = (o == "random") ? "random" : "seq";
         } else if (a == "--max-plies") {
             const char* v = needValue(i, a); if (!v) return false;
             opt.maxPlies = std::max(1, std::atoi(v));
@@ -874,6 +1375,18 @@ int main(int argc, char** argv) {
     if (showHelp) {
         printUsage();
         return 0;
+    }
+
+    if (opt.nnueMode == NnueMode::Static) {
+        if (opt.qs == QsMode::Both) {
+            std::cout << "info string --nnue-mode static has no search, so --qs both "
+                         "would play the same match twice; using qs on only\n";
+            opt.qs = QsMode::On;
+        }
+
+        if (opt.nodes > 0)
+            std::cout << "info string --nnue-mode static ignores --nodes "
+                         "(exactly one NNUE evaluation per legal move)\n";
     }
 
     std::cout << "info string initialising engine...\n";
@@ -917,13 +1430,60 @@ int main(int argc, char** argv) {
               << ", " << (opt.useSmallPolicy ? g_policy_small.num_moves : g_policy.num_moves)
               << " output moves)\n";
 
+    // ---- Opening book -----------------------------------------------------
+    std::vector<Opening> openings;
+
+    for (std::string& path : opt.openingsFiles) {
+        const std::string resolved = resolveBookPath(path);
+
+        if (resolved.empty()) {
+            std::cerr << "error: no opening book found for '" << path << "'\n"
+                      << "       put uho.epd (e.g. UHO_4060_v1.epd from\n"
+                      << "       github.com/official-stockfish/books) next to the binary,\n"
+                      << "       run 'make uho' to download it, or pass --openings <file>\n";
+            return 1;
+        }
+
+        if (resolved != path) {
+            std::cout << "info string using opening book " << resolved << "\n";
+            path = resolved;
+        }
+    }
+
+    if (!opt.openingsFiles.empty()) {
+        std::string err;
+        size_t total = 0;
+
+        const size_t pairsNeeded = size_t((opt.games + 1) / 2);
+
+        if (!loadOpenings(opt.openingsFiles, pairsNeeded, opt.openingsOrder,
+                          opt.seed, openings, total, err)) {
+            std::cerr << "error: " << err << "\n";
+            return 1;
+        }
+
+        if (openings.empty()) {
+            std::cerr << "error: no openings found in the given file(s)\n";
+            return 1;
+        }
+
+        std::cout << "info string book contains " << total << " openings, using "
+                  << openings.size() << " (" << opt.openingsOrder << " order)\n";
+
+        if (total < pairsNeeded) {
+            std::cout << "info string note: " << pairsNeeded
+                      << " opening pairs requested but the book only has " << total
+                      << "; openings will repeat\n";
+        }
+    }
+
     std::vector<MatchResult> matches;
 
     if (opt.qs == QsMode::Both) {
-        matches.push_back(runMatch(opt, true));
-        matches.push_back(runMatch(opt, false));
+        matches.push_back(runMatch(opt, openings, true));
+        matches.push_back(runMatch(opt, openings, false));
     } else {
-        matches.push_back(runMatch(opt, opt.qs == QsMode::On));
+        matches.push_back(runMatch(opt, openings, opt.qs == QsMode::On));
     }
 
     // ---- Comparison table (for --qs both) ---------------------------------

@@ -88,6 +88,15 @@ $(ARENA): $(ENGINE_SOURCES) src/arena.cpp
 > $(CXX) $(CXXFLAGS) $(ENGINE_SOURCES) src/arena.cpp -o $(ARENA)
 
 # ============================================================================
+# Opening book (optional): make uho [UHO_BOOK=UHO_Lichess_4852_v1.epd]
+# ============================================================================
+
+UHO_BOOK ?= UHO_4060_v1.epd
+
+uho:
+> $(PYTHON) tools/fetch_uho.py $(UHO_BOOK)
+
+# ============================================================================
 # Clean
 # ============================================================================
 
@@ -97,4 +106,4 @@ clean:
 clean-embed:
 > rm -f src/policy_embed.h src/policy_embed_small.h
 
-.PHONY: all embed clean clean-embed
+.PHONY: all embed uho clean clean-embed
