@@ -337,8 +337,10 @@ int quiescence(chess::Board& board, int alpha, int beta,
     if (stats.stopped)
         return alpha;
 
-    if (ply_from_root >= MAX_PLY)
-        return scaleNNUE(g_nnue.evaluate(board, thread));
+    if (ply_from_root >= MAX_PLY) {
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        return correctedEval(raw_eval, board.sideToMove(), getPawnKey(board));
+    }
 
     if (isDrawByRepetition(board) || isDrawByFiftyMove(board))
         return getDrawScore(ply_from_root);
@@ -367,7 +369,9 @@ int quiescence(chess::Board& board, int alpha, int beta,
     int best_score;
 
     if (!in_check) {
-        best_score = scaleNNUE(g_nnue.evaluate(board, thread));
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        uint64_t pawn_key = getPawnKey(board);
+        best_score = correctedEval(raw_eval, board.sideToMove(), pawn_key);
         if (best_score >= beta) {
             storeTT(hash, 0, best_score, chess::Move(), TT_LOWER, ply_from_root);
             return best_score;
@@ -447,8 +451,10 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     if (alpha >= beta) return alpha;
 
-    if (ply_from_root >= MAX_PLY)
-        return scaleNNUE(g_nnue.evaluate(board, thread));
+    if (ply_from_root >= MAX_PLY) {
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        return correctedEval(raw_eval, board.sideToMove(), getPawnKey(board));
+    }
 
     if (stats.stopped || (tm && tm->should_stop())) {
         stats.stopped = true;
@@ -552,7 +558,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     // Null move pruning
     if (allow_null && !in_check && !is_pv_node && !in_singular_search &&
-        depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta) {
+        depth >= 3 && hasNonPawnMaterial(board) && static_eval >= beta + 30) {
         int R = 3 + depth / 3 + (improving ? 1 : 0);
         R = std::min(R, depth - 1);
 
@@ -685,6 +691,20 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     int best_score = -MATE_SCORE;
     int original_alpha = alpha;
 
+    auto tryUpdateCorrection = [&](int score, chess::Move mv, bool is_quiet_mv) {
+        if (in_singular_search || in_check) return;
+        if (score >= beta) {
+            if (score > static_eval && is_quiet_mv)
+                updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, score);
+        } else if (score <= original_alpha) {
+            if (score < static_eval && (mv == chess::Move() || is_quiet_mv))
+                updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, score);
+        } else {
+            if (mv != chess::Move() && is_quiet_mv)
+                updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, score);
+        }
+    };
+
     chess::Move quiets_searched[MAX_QUIETS_TRACKED];
     int quiets_count = 0;
     CaptureSearchInfo captures_searched[MAX_CAPTURES_TRACKED];
@@ -703,14 +723,14 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         bool is_noisy = !is_quiet;
 
         // SEE pruning for noisy moves
-        if (!in_singular_search && !is_pv_node && !in_check && is_noisy && depth <= 8 &&
+        if (!is_pv_node && !in_check && is_noisy && depth <= 8 &&
             best_score > -MATE_SCORE + 100 &&
             !chess::see::see_ge(board, move, -SEE_NOISY_MARGIN * depth)) {
             continue;
         }
 
         // SEE pruning for quiets
-        if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
+        if (!is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             !g_killerMoves.is_killer(ply_from_root, move) && move_count >= 2) {
             if (!chess::see::see_ge(board, move, -SEE_QUIET_MARGIN * depth))
@@ -718,7 +738,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
 
         // History pruning
-        if (!in_singular_search && !is_pv_node && !in_check && depth <= 4 &&
+        if (!is_pv_node && !in_check && depth <= 4 &&
             is_quiet && move_count >= 3 && move != tt_move && best_score > -MATE_SCORE + 100) {
             chess::Piece hp = board.at(move.from());
             int hist_score = getCombinedHist(side_to_move, move, hp, ply_from_root, ss);
@@ -726,7 +746,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 continue;
         }
 
-        if (!in_singular_search && !is_pv_node && !in_check && depth <= 8 &&
+        if (!is_pv_node && !in_check && depth <= 8 &&
             is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             move_count >= 3 + depth * depth) {
             mp.skipQuiets();
@@ -760,7 +780,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         };
 
         // Futility pruning
-        if (!in_singular_search && !is_pv_node && !in_check &&
+        if (!is_pv_node && !in_check &&
             depth <= 7 && is_quiet && move != tt_move && best_score > -MATE_SCORE + 100 &&
             std::abs(alpha) < MATE_SCORE - 100) {
             int futility_margin = FUTILITY_BASE_MARGIN + FUTILITY_PER_DEPTH_MARGIN * depth;
@@ -789,7 +809,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         int new_depth = depth + local_extension - 1;
 
         bool can_reduce = !in_check && is_quiet && move_count > 1 &&
-                          depth >= 3 && !in_singular_search &&
+                          depth >= 3 &&
                           new_depth > 1 && !givesCheck();
 
         if (can_reduce) {
@@ -887,6 +907,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
                 }
             }
 
+            tryUpdateCorrection(best_score, move, is_quiet);
+
             if (!in_singular_search) {
                 storeTT(hash, depth, best_score, best_move, TT_LOWER, ply_from_root);
             }
@@ -948,11 +970,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         }
     }
 
-    bool exact_node = best_score > original_alpha && best_score < beta;
-    if (!in_singular_search && !in_check && exact_node &&
-        best_move != chess::Move() && isQuietMove(board, best_move)) {
-        updateCorrection(side_to_move, pawn_key, depth, raw_static_eval, best_score);
-    }
+    bool best_is_quiet = (best_move != chess::Move()) && isQuietMove(board, best_move);
+    tryUpdateCorrection(best_score, best_move, best_is_quiet);
 
     if (!in_singular_search) {
         TTFlag flag = (best_score > original_alpha) ? TT_EXACT : TT_UPPER;
