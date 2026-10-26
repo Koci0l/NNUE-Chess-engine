@@ -48,7 +48,7 @@ CXXFLAGS += -DPOLICY_SMALL_HL=$(POLICY_SMALL_HL)
 # Target
 # ============================================================================
 
-TARGET ?= $(or $(EXE), Kociolek-2.2.exe)
+TARGET ?= $(or $(EXE), Kociolek-2.3.exe)
 
 SOURCES = $(wildcard src/*.cpp)
 
