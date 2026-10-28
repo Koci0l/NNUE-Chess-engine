@@ -65,8 +65,11 @@ constexpr int RAZOR_MARGIN_D1 = 300;
 constexpr int RAZOR_MARGIN_D2 = 500;
 constexpr int RAZOR_MARGIN_D3 = 700;
 
-inline int scaleNNUE(int raw_score) {
-    return raw_score;
+inline int scaleNNUE(int raw_score, const chess::Board& board) {
+    int hmc = board.halfMoveClock();
+    if (std::abs(raw_score) >= MATE_SCORE - 200)
+        return raw_score;
+    return raw_score * (200 - hmc) / 200;
 }
 
 static inline uint64_t getPawnKey(const chess::Board& board) {
@@ -338,7 +341,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
         return alpha;
 
     if (ply_from_root >= MAX_PLY) {
-        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread), board);
         return correctedEval(raw_eval, board.sideToMove(), getPawnKey(board));
     }
 
@@ -369,7 +372,7 @@ int quiescence(chess::Board& board, int alpha, int beta,
     int best_score;
 
     if (!in_check) {
-        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread), board);
         uint64_t pawn_key = getPawnKey(board);
         best_score = correctedEval(raw_eval, board.sideToMove(), pawn_key);
         if (best_score >= beta) {
@@ -452,7 +455,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     if (alpha >= beta) return alpha;
 
     if (ply_from_root >= MAX_PLY) {
-        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        int raw_eval = scaleNNUE(g_nnue.evaluate(board, thread), board);
         return correctedEval(raw_eval, board.sideToMove(), getPawnKey(board));
     }
 
@@ -516,7 +519,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
     uint64_t pawn_key = getPawnKey(board);
 
     if (!in_check) {
-        raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread));
+        raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread), board);
         static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
