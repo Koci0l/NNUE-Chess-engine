@@ -8,6 +8,51 @@
 #include <cstdlib>
 #include <cstring>
 
+class PawnHistory {
+public:
+    static constexpr int PAWN_HASH_SIZE = 1024;
+    static constexpr int MAX_HISTORY = 16384;
+
+    PawnHistory() { clear(); }
+
+    void clear() {
+        std::memset(table, 0, sizeof(table));
+    }
+
+    void age() {
+        for (int h = 0; h < PAWN_HASH_SIZE; ++h)
+            for (int p = 0; p < 12; ++p)
+                for (int s = 0; s < 64; ++s)
+                    table[h][p][s] /= 2;
+    }
+
+    int get(uint64_t pawn_key, chess::Piece piece, chess::Square to) const {
+        if (piece == chess::Piece::NONE) return 0;
+        int idx = static_cast<int>(pawn_key & (PAWN_HASH_SIZE - 1));
+        return table[idx][pieceIndex(piece)][to.index()];
+    }
+
+    void update(uint64_t pawn_key, chess::Piece piece, chess::Square to, int bonus) {
+        if (piece == chess::Piece::NONE) return;
+        int clamped = std::clamp(bonus, -MAX_HISTORY, MAX_HISTORY);
+        int idx = static_cast<int>(pawn_key & (PAWN_HASH_SIZE - 1));
+        int16_t& entry = table[idx][pieceIndex(piece)][to.index()];
+        int cur = entry;
+        entry = static_cast<int16_t>(cur + clamped - cur * std::abs(clamped) / MAX_HISTORY);
+    }
+
+private:
+    static inline int pieceIndex(chess::Piece piece) {
+        int c = (piece.color() == chess::Color::WHITE) ? 0 : 1;
+        int pt = static_cast<int>(piece.type());
+        return c * 6 + pt;
+    }
+
+    int16_t table[PAWN_HASH_SIZE][12][64];
+};
+
+extern PawnHistory g_pawnHistory;
+
 struct ButterflyHistory {
     static constexpr int HISTORY_MAX = 16384;
     static constexpr int HISTORY_GRAVITY = HISTORY_MAX;

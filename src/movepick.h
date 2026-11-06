@@ -4,17 +4,17 @@
 #include <vector>
 
 struct MovePickerContext {
-    chess::Move tt_move{};
-    chess::Move counter_move{};
-    chess::Color side_to_move{};
-    int ply = 0;
-    SearchStack* ss = nullptr;
+    chess::Move tt_move;
+    chess::Move counter_move;
+    chess::Color side_to_move;
+    int ply;
+    const SearchStack* ss;
+    uint64_t pawn_key;
 
-    MovePickerContext() = default;
-    MovePickerContext(chess::Move tt, chess::Move counter, chess::Color side,
-                      int ply_, SearchStack* ss_)
-        : tt_move(tt), counter_move(counter), side_to_move(side),
-          ply(ply_), ss(ss_) {}
+    MovePickerContext(chess::Move tt, chess::Move cm, chess::Color stm,
+                      int ply_, const SearchStack* stack, uint64_t pk = 0)
+        : tt_move(tt), counter_move(cm), side_to_move(stm),
+          ply(ply_), ss(stack), pawn_key(pk) {}
 };
 
 enum class MovePickStage {

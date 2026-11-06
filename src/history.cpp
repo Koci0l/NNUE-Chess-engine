@@ -9,6 +9,7 @@ ContinuationHistory g_contHist2ply;
 CorrectionHistory g_correctionHistory;
 CorrectionHistory g_pawnCorrectionHistory;
 CorrectionHistory g_materialCorrectionHistory;
+PawnHistory g_pawnHistory;
 
 void ButterflyHistory::age() {
     for (int c = 0; c < 2; ++c) {

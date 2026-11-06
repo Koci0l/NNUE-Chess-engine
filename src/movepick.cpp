@@ -70,6 +70,8 @@ int MovePicker::scoreOneCapture(const chess::Move& move) {
 
 int MovePicker::scoreOneQuiet(const chess::Move& move) {
     chess::Piece piece = m_board.at(move.from());
+    int score = 0;
+    score += g_pawnHistory.get(m_ctx.pawn_key, piece, move.to())/2;
     int hist = g_butterflyHistory.get(m_ctx.side_to_move, move.from(), move.to());
     int cont1 = 0;
     int cont2 = 0;
@@ -89,7 +91,7 @@ int MovePicker::scoreOneQuiet(const chess::Move& move) {
                 piece, move.to());
         }
     }
-    return hist + cont1 + cont2;
+    return score + hist + cont1 + cont2;
 }
 
 void MovePicker::scoreCaptures() {
@@ -309,7 +311,17 @@ QSearchMovePicker::QSearchMovePicker(const chess::Board& board, chess::Move tt_m
 
 void QSearchMovePicker::ensureLegal() {
     if (!m_legal_generated) {
-        chess::movegen::legalmoves(m_legal, m_board);
+        chess::Color stm = m_board.sideToMove();
+        chess::Bitboard promo_rank = (stm == chess::Color::WHITE)
+            ? chess::Bitboard(0x00FF000000000000ULL)
+            : chess::Bitboard(0x000000000000FF00ULL);
+        bool has_promo_pawns = static_cast<bool>(
+            m_board.pieces(chess::PieceType::PAWN, stm) & promo_rank);
+
+        if (m_in_check || has_promo_pawns)
+            chess::movegen::legalmoves(m_legal, m_board);
+        else
+            chess::movegen::legalmoves<chess::movegen::MoveGenType::CAPTURE>(m_legal, m_board);
         m_legal_generated = true;
     }
 }
