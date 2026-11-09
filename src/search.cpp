@@ -274,7 +274,7 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
                                 ThreadInfo& thread, const TimeManager* tm, SearchStats& stats,
                                 chess::Move tt_move, uint64_t hash,
                                 bool is_pv_node, bool is_quiet_move, SearchStack* ss,
-                                bool cutNode) {
+                                bool cutNode, int corrplexity) {
     SEResult out;
     if (depth < SE_MIN_DEPTH || tt_move == chess::Move()) return out;
 
@@ -299,7 +299,11 @@ SEResult probeSingularExtension(chess::Board& board, int depth, int beta, int pl
 
     if (val < singular_beta) {
         int ext = 1;
-        if (!is_pv_node && val + SE_DOUBLE_BIAS < singular_beta)
+
+        // Potential double-corrplexity-extension aka stolen code
+        int double_bias = SE_DOUBLE_BIAS - std::clamp(corrplexity / 4, 0, 30);
+
+        if (!is_pv_node && val + double_bias < singular_beta)
             ext += 1;
         if (!is_pv_node && is_quiet_move && val + SE_TRIPLE_BIAS < singular_beta)
             ext += 1;
@@ -537,6 +541,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
 
     int raw_static_eval = 0;
     int static_eval = 0;
+    int corrplexity = 0;
     bool improving = false;
     uint64_t pawn_key = getPawnKey(board);
     uint64_t mat_key = 0;
@@ -545,6 +550,7 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         mat_key = getMaterialKey(board);
         raw_static_eval = scaleNNUE(g_nnue.evaluate(board, thread), board);
         static_eval = correctedEval(raw_static_eval, board.sideToMove(), pawn_key, mat_key);
+        corrplexity = std::abs(static_eval - raw_static_eval);
 
         if (tt_hit && !in_singular_search && std::abs(tt_score) < MATE_SCORE - 100) {
             if (tt_flag == TT_EXACT ||
@@ -792,7 +798,8 @@ int alphaBeta(chess::Board& board, int depth, int alpha, int beta, int ply_from_
         if (!in_singular_search && move == tt_move && !in_check) {
             auto se = probeSingularExtension(board, depth, beta, ply_from_root,
                                              thread, tm, stats, tt_move, hash,
-                                             is_pv_node, is_quiet, ss, cutNode);
+                                             is_pv_node, is_quiet, ss, cutNode,
+                                             corrplexity);
             if (stats.stopped)
                 return alpha;
             if (se.multicut)
